@@ -5,14 +5,18 @@ from __future__ import annotations
 
 from .base import Context, Phase, PhaseResult, PlannedPhase
 from .p00_intake import IntakePhase
+from .p02_recon import ReconPhase
+from .p03_probe import ProbePhase
+from .p02_recon import ReconPhase
+from .p03_probe import ProbePhase
 
 
 def all_phases() -> list[Phase]:
     return [
         IntakePhase(),
         PlannedPhase("01-intel", "Intelligence: past and disclosed reports", 5),
-        PlannedPhase("02-recon", "Recon: subdomains, DNS, takeover candidates, ports", 4),
-        PlannedPhase("03-probe", "Probe and fingerprint, per-host baselines", 4),
+        ReconPhase(),
+        ProbePhase(),
         PlannedPhase("04-map", "Mapping and crawl, request inventory, JavaScript collection", 4),
         PlannedPhase("05-discover", "Content and parameter discovery", 4),
         PlannedPhase("06-js", "JavaScript analysis", 5),
@@ -27,4 +31,4 @@ def all_phases() -> list[Phase]:
     ]
 
 
-__all__ = ["Context", "Phase", "PhaseResult", "PlannedPhase", "all_phases"]
+__all__ = ["Context", "Phase", "PhaseResult", "PlannedPhase", "ReconPhase", "ProbePhase", "all_phases"]

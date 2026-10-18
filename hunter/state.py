@@ -73,6 +73,15 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     session_id TEXT,
     log_path TEXT
 );
+CREATE TABLE IF NOT EXISTS inventory (
+    kind TEXT NOT NULL,
+    key TEXT NOT NULL,
+    data TEXT NOT NULL,
+    first_phase TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (kind, key)
+);
+CREATE INDEX IF NOT EXISTS idx_inventory_kind ON inventory(kind);
 """
 
 
@@ -196,6 +205,39 @@ class State:
         columns = ", ".join(fields)
         marks = ", ".join("?" for _ in fields)
         self.db.execute(f"INSERT INTO agent_runs({columns}) VALUES({marks})", tuple(fields.values()))
+
+    # inventory: hosts, services and other records that phases build on ------
+    def put(self, kind: str, key: str, data: dict, phase_id: str | None = None,
+            merge: bool = True) -> dict:
+        """Create or update one inventory record. With merge=True the new
+        data is merged into the existing record (new keys win)."""
+        existing = self.get(kind, key)
+        if existing is not None and merge:
+            merged = {**existing, **data}
+        else:
+            merged = dict(data)
+        self.db.execute(
+            "INSERT INTO inventory(kind, key, data, first_phase, updated_at) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(kind, key) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at",
+            (kind, key, json.dumps(merged), phase_id, now()))
+        return merged
+
+    def get(self, kind: str, key: str) -> dict | None:
+        row = self.db.execute("SELECT data FROM inventory WHERE kind=? AND key=?", (kind, key)).fetchone()
+        return json.loads(row["data"]) if row else None
+
+    def items(self, kind: str) -> list[dict]:
+        rows = self.db.execute("SELECT key, data FROM inventory WHERE kind=? ORDER BY key", (kind,))
+        out = []
+        for row in rows:
+            record = json.loads(row["data"])
+            record.setdefault("key", row["key"])
+            out.append(record)
+        return out
+
+    def count(self, kind: str, where: str = "") -> int:
+        sql = "SELECT COUNT(*) AS n FROM inventory WHERE kind=?"
+        return self.db.execute(sql + (f" AND {where}" if where else ""), (kind,)).fetchone()["n"]
 
     def agent_totals(self) -> dict:
         row = self.db.execute(

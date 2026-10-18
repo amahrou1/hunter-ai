@@ -35,10 +35,16 @@ For each program:
   hunt scope <name>          what the AI read as in scope / out of scope / unclear
   hunt scope <name> check <url>      would this URL be allowed?
   hunt handle <username>     your platform username (for required headers and emails)
+  hunt tools                 show which recon tools are installed
+  hunt tools install         download the recon tools (subfinder, dnsx, httpx, ...)
 
 Models:
   hunt models                show which model each task uses
   hunt models use glm        switch everything to glm, deepseek or claude
+
+Tools:
+  hunt tools status          are the recon tools installed?
+  hunt tools install         download or update the recon tools
   hunt models role <role> <profile[:tier]>   advanced: one task on another model
 
 Maintenance:
@@ -304,6 +310,22 @@ def cmd_handle(args) -> int:
     return 0
 
 
+def cmd_tools(args) -> int:
+    from . import toolchain
+    if args.action == "status":
+        ok = toolchain.status(_print)
+        return 0 if ok else 1
+    _print("Installing recon tools into " + str(toolchain.tools_dir()))
+    report = toolchain.install_all(prefer_latest=not args.pinned, force=args.force, out=_print)
+    missing = [r.name for r in report.results if not r.ok]
+    if missing:
+        _print("")
+        _print("These did not install: " + ", ".join(missing) + ". You can try again with: hunt tools install")
+        return 1
+    _print("All recon tools are installed.")
+    return 0
+
+
 def cmd_update(_args) -> int:
     repo = paths.REPO_DIR
     _print("Downloading the newest version ...")
@@ -358,6 +380,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("handle")
     p.add_argument("name", nargs="?")
     p.set_defaults(func=cmd_handle)
+    p = sub.add_parser("tools")
+    p.add_argument("action", nargs="?", choices=["install", "status"], default="status")
+    p.add_argument("--pinned", action="store_true", help="use the tested versions, not the latest")
+    p.add_argument("--force", action="store_true", help="reinstall even if present")
+    p.set_defaults(func=cmd_tools)
     sub.add_parser("update").set_defaults(func=cmd_update)
     sub.add_parser("reset-settings").set_defaults(func=cmd_reset_settings)
     sub.add_parser("version").set_defaults(func=cmd_version)

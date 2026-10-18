@@ -249,9 +249,25 @@ class Orchestrator:
 
     def _wait_for_inputs(self, open_blockers) -> bool:
         """Wait a limited time for the operator to add missing inputs.
-        Returns True if something changed and phases must run again."""
+        Returns True if something changed and phases must run again. Only
+        blockers that a file in the target folder can resolve are worth
+        waiting for; a blocker with no watched file (for example a missing
+        tool) is reported and the run finishes instead of waiting."""
         assert self.state is not None
-        wait_minutes = float(self.settings["run"]["blocker_wait_minutes"])
+        file_backed = [b for b in open_blockers if json.loads(b["watch_files"] or "[]")]
+        if not file_backed:
+            needs = "\n".join(f"- {b['need']} ({b['phase_id']})" for b in open_blockers)
+            self._log("Open blockers cannot be resolved by adding a file; finishing and listing them as gaps.")
+            self.notifier.send("Finished with open blockers",
+                               f"These need action on the server, not a file:\n{needs}", "warn",
+                               target=self.target.name)
+            for blocker in open_blockers:
+                self.state.close_blocker(blocker["id"], "UNRESOLVED")
+            return False
+        open_blockers = file_backed
+        import os
+        wait_minutes = float(os.environ.get("HUNTER_BLOCKER_WAIT_MINUTES",
+                                             self.settings["run"]["blocker_wait_minutes"]))
         poll = max(5.0, float(self.settings["run"]["poll_seconds"]))
         needs = "\n".join(f"- {b['need']} ({b['phase_id']})" for b in open_blockers)
         if wait_minutes > 0:

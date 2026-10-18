@@ -18,9 +18,11 @@ from typing import Iterable
 from .. import scope as sc
 from .. import state as st
 from ..agent import AgentResult, run_agent
+from ..assets import Assets
 from ..notify import Notifier
 from ..proxy import ScopeProxy
 from ..target import Target
+from ..tools import ToolRunner
 
 
 @dataclass
@@ -70,6 +72,29 @@ class Context:
         if self._proxy is not None:
             self._proxy.stop()
             self._proxy = None
+
+    # Assets inventory ------------------------------------------------------
+    def assets(self) -> Assets:
+        """Hosts and services for this run, in the same SQLite file as the
+        run state."""
+        return Assets(self.state.db)
+
+    # Tool runners ----------------------------------------------------------
+    def passive_runner(self, mem_mb: int | None = None) -> ToolRunner:
+        """For tools that never touch the target (certificate logs, Shodan).
+        They reach their data sources directly."""
+        assert self.phase_id
+        cfg = self.settings.get("tools", {})
+        return ToolRunner(self.phase_dir() / "work", self.target.logs / "tools" / self.phase_id,
+                          env=None, mem_mb=mem_mb or int(cfg.get("mem_mb", 1500)), log=self.log)
+
+    def active_runner(self, mem_mb: int | None = None) -> ToolRunner:
+        """For tools that touch the target. Their traffic goes through the
+        scope proxy, so it is scope-checked, rate-limited and logged."""
+        assert self.phase_id
+        cfg = self.settings.get("tools", {})
+        return ToolRunner(self.phase_dir() / "work", self.target.logs / "tools" / self.phase_id,
+                          env=self.proxy().env(), mem_mb=mem_mb or int(cfg.get("mem_mb", 1500)), log=self.log)
 
     # Folders ---------------------------------------------------------------
     def phase_dir(self) -> Path:

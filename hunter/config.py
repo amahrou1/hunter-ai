@@ -98,6 +98,19 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         # "X-Bug-Bounty: <username>" and to build platform emails.
         "handle": "",
     },
+    "recon": {
+        "subfinder_rps": 10, "subfinder_max_min": 15,
+        "dnsx_rps": 150, "dnsx_threads": 50,
+        "brute_max_min": 20, "resolve_max_min": 20,
+    },
+    "probe": {
+        "ports": [80, 443, 8080, 8443, 8000, 8888],
+        "threads": 20, "max_min": 30,
+    },
+    "tools": {
+        # Soft memory cap per external tool (MB). The VPS has 8 GB.
+        "mem_mb": 1500,
+    },
     "proxy": {
         "port": 0,  # 0 = pick a free port per run
         "log_body_bytes": 4096,

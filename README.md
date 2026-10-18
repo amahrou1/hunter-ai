@@ -59,6 +59,22 @@ The guard proves itself at the end of intake and in `hunt doctor`.
 `header X-Bug-Bounty: name`. Saving it during a run restarts the run with the
 new scope.
 
+## Recon and probing
+
+`hunt tools install` downloads subfinder, dnsx, httpx, naabu, katana and ffuf
+as released binaries (checksum-verified) into `~/.local/share/hunter-ai/tools`
+(no compiler, no sudo). The installer calls it; rerun any time.
+
+Phase 02 (recon) finds subdomains of in-scope wildcards (subfinder, passive),
+resolves them (dnsx), scope-checks every result, and classifies each host as
+in scope, out of scope, or likely third-party (a CNAME to a SaaS/CDN that pays
+nothing, deprioritised). Dangling CNAMEs are flagged as subdomain-takeover
+candidates. Phase 03 (probe) finds live HTTP(S) services with httpx, records
+status/title/server/tech, and builds a per-host "soft 404" baseline so later
+fuzzing can tell real pages from catch-all responses. All target traffic goes
+through the scope proxy. Output: `hosts_in_scope.txt`, `recon.json`,
+`services.txt`, `services.json`.
+
 ## Target folder
 
 | File | Required | Purpose |

@@ -116,7 +116,11 @@ fi
 mkdir -p "$HOME/.config/hunter-ai" "$HOME/targets"
 chmod 700 "$HOME/.config/hunter-ai"
 
-# --- 5. Self-check ------------------------------------------------------
+# --- 5. Recon tools (best effort) ---------------------------------------
+say "Installing the recon tools (subfinder, dnsx, naabu, httpx, katana, ffuf)"
+"$REPO_DIR/bin/hunt" tools install || say "Some recon tools did not install. Run later: hunt tools install"
+
+# --- 6. Self-check ------------------------------------------------------
 "$REPO_DIR/bin/hunt" version >/dev/null || fail "The hunt command does not start."
 
 say "hunter-ai $("$REPO_DIR/bin/hunt" version | awk '{print $2}') is installed."

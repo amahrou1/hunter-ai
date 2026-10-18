@@ -65,7 +65,11 @@ def test_default_pipeline_runs_and_is_honest(make_target, settings_secrets, noti
     state = st.State(target.state_db)
     rows = {r["phase_id"]: r for r in state.phases()}
     assert rows["00-intake"]["status"] == st.DONE
-    assert all(r["status"] == st.NOT_BUILT for pid, r in rows.items() if pid != "00-intake")
+    # 02-recon and 03-probe are real now; with no recon tools in the test env they
+    # finish NOT_APPLICABLE/PARTIAL/BLOCKED, not NOT_BUILT. The later phases are still placeholders.
+    built = {"00-intake", "02-recon", "03-probe"}
+    assert all(r["status"] == st.NOT_BUILT for pid, r in rows.items() if pid not in built)
+    assert rows["02-recon"]["status"] != st.NOT_BUILT
     manifest = json.loads((target.output / "inputs" / "manifest.json").read_text())
     assert manifest["policy.txt"]["present"] and not manifest["reports.txt"]["present"]
     assert (target.output / "run_summary.md").exists()

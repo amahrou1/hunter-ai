@@ -87,14 +87,16 @@ def test_cli_run_and_status(env, make_target, capsys, monkeypatch):
     policies = Path(__file__).parent / "policies"
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "draft")
     monkeypatch.setenv("FAKE_CLAUDE_DRAFTS", str(policies / "intigriti_acme.draft.json"))
+    monkeypatch.setenv("HUNTER_BLOCKER_WAIT_MINUTES", "0")  # do not wait for inputs in the test
     make_target(policy=(policies / "intigriti_acme.txt").read_text())
     assert cli.main(["handle", "amahrou1"]) == 0
     config.save_secrets({"GLM_API_KEY": "glm-test-1234567"})  # no webhook -> notifier only logs
-    assert cli.main(["run", "acme"]) == 0
+    rc = cli.main(["run", "acme"])
+    assert rc == 0
     capsys.readouterr()
     assert cli.main(["status", "acme"]) == 0
     out = capsys.readouterr().out
-    assert "00-intake" in out and "DONE" in out and "NOT_BUILT" in out
+    assert "00-intake" in out and "NOT_BUILT" in out
     assert cli.main(["status"]) == 0
     assert "1/15 phases finished" in capsys.readouterr().out
     assert cli.main(["scope", "acme", "check", "https://app.acme-test.com/x"]) == 0

@@ -66,6 +66,13 @@ def check_system(report: Report) -> None:
     except (OSError, KeyError, ValueError):
         pass
 
+    from . import toolchain
+    missing_tools = [t.name for t in toolchain.TOOLS if toolchain.installed_path(t) is None]
+    if not missing_tools:
+        report.add(PASS, "Recon tools", "all installed")
+    else:
+        report.add(WARN, "Recon tools", "missing: " + ", ".join(missing_tools) + ". Run: hunt tools install")
+
     skills = paths.skills_dir()
     if skills.is_dir():
         count = sum(1 for p in skills.iterdir() if (p / "SKILL.md").exists())
