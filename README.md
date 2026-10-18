@@ -29,7 +29,8 @@ hunt doctor
 ```bash
 hunt new acme                      # creates ~/targets/acme with template files
 nano ~/targets/acme/policy.txt     # paste the program page
-hunt start acme                    # runs in the background (tmux)
+hunt start acme                    # runs the whole pipeline in the background (tmux)
+hunt start acme --until 03-probe   # run only up to a phase (test phase by phase)
 hunt watch acme                    # live view; leave with Ctrl+b then d
 hunt status acme                   # phases, live progress with % and time left, blockers
 hunt stop acme                     # stop; `hunt start acme` resumes
@@ -37,6 +38,7 @@ hunt tell acme "focus api.acme.com"   # steer the run, also while it runs
 hunt tell acme                     # list your messages and what they changed
 hunt chat acme                     # talk to an AI about what the run found
 hunt reset acme 02-recon           # clear a stuck phase so it runs again
+hunt findings acme                 # findings so far (by severity) and report drafts
 hunt scope acme                    # what was read as in scope / out / unclear
 hunt scope acme check <url>        # would this URL be allowed?
 hunt handle amahrou1               # your platform username (headers, emails)
@@ -88,22 +90,51 @@ soft hints reach the testing agents. Nothing can widen the scope.
 in the target folder. It reads the run's results and passes your decisions on
 with `hunt tell`; it never sends requests to the target itself.
 
-## Recon and probing
+## The pipeline (AI-driven)
 
-`hunt tools install` downloads subfinder, dnsx, httpx, naabu, katana and ffuf
-as released binaries (checksum-verified) into `~/.local/share/hunter-ai/tools`
-(no compiler, no sudo). The installer calls it; rerun any time.
+`hunt start` runs these phases in order, on its own. Phase 00 (intake) is code:
+it has an AI read `policy.txt`, then validates the scope and proves the guard.
+Every other phase is an AI agent that decides what to run, reads the results,
+adapts, follows leads, and records what it finds.
 
-Phase 02 (recon) finds subdomains of in-scope wildcards (subfinder, passive),
-resolves them (dnsx), scope-checks every result, and classifies each host as
-in scope, out of scope, or likely third-party (a CNAME to a SaaS/CDN that pays
-nothing, deprioritised). Dangling CNAMEs are flagged as subdomain-takeover
-candidates. Phase 03 (probe) finds live HTTP(S) services with httpx, records
-status/title/server/tech, and builds a per-host "soft 404" baseline so later
-fuzzing can tell real pages from catch-all responses. Probing is incremental:
-a resumed run, or a host added with `hunt tell`, only probes hosts not probed yet. All target traffic goes
-through the scope proxy. Output: `hosts_in_scope.txt`, `recon.json`,
-`services.txt`, `services.json`.
+| Phase | Does | Model tier |
+|---|---|---|
+| 00-intake | read policy, build scope, prove the guard | (policy reader) |
+| 01-intel | past and disclosed reports -> what to focus on | strong |
+| 02-recon | subdomains, DNS, takeover candidates | flash |
+| 03-probe | live services, fingerprints, baselines, IP-range port scan | flash |
+| 04-map | crawl, endpoints, parameters, JavaScript | flash |
+| 05-discover | hidden files and paths, content-checked leads | flash |
+| 06-js | endpoints and secrets from JavaScript | flash |
+| 07-accounts | supplied or self-registered accounts (owner + low-priv) | strong |
+| 08-authz-logic | access control, IDOR/BOLA, logic, GraphQL authz | strong |
+| 09-injection | XSS/SQLi/SSRF/SSTI/redirect, AI-feature tests (detect-only) | strong |
+| 10-misconfig | CORS, headers, cache, disclosure, exposed services | flash |
+| 11-validate | re-prove with controls, set severity and CVSS | strong (max) |
+| 12-disprove | adversarial second pass -> confirmed or dropped | strong (max) |
+| 13-report | house-style drafts; you verify and submit | strong (max) |
+| 14-skills | optional pass over your skill playbooks | strong |
+
+Change any phase's model with `hunt models role <role> <profile:tier>` (roles:
+scanner, prober, mapper, discoverer, jsanalyst, misconfig, intel, accounts,
+authz, injection, validator, disprover, writer).
+
+Each phase works through `hk`, the toolkit the agent uses: it reads and writes
+the shared inventory (hosts, services, endpoints, leads, findings), imports
+tool output, runs the safe built-in checks (port scan, baselines, content
+checks, takeover), and reports progress. Every `hk` write is scope-checked.
+
+## How safety is enforced (not left to the model)
+
+1. **Scope proxy.** Every request to a target goes through it; out-of-scope
+   traffic is blocked at the network layer. Passive data sources and the model
+   API bypass it (they are not targets).
+2. **Command checker** (a PreToolUse hook): reads each command before it runs
+   and blocks out-of-scope hosts, anything that disables the proxy, port
+   scanners (use `hk portscan`), brute forcing, and the run's own controls.
+3. **Orchestrator:** owns phase order, the rate limit, state, resume and
+   completion. Findings only become report drafts after the validate and
+   disprove phases both pass them.
 
 ## Target types
 
@@ -117,55 +148,6 @@ The scope model and the phases work for any program shape:
 | IP address / CIDR range | built-in TCP connect scan (no root, no libpcap), paced by the program rate; large ranges get fewer ports (reported) |
 | "all assets owned by X" | recorded with its quote, never expanded by guessing; the run tests what the policy names plus what you confirm with `in ...` lines, and asks you on Discord |
 | mobile apps, source code | listed, not tested yet (reported as gaps) |
-
-## Mapping and discovery
-
-Phase 04 crawls every live in-scope site with katana through the guard (same
-host only, robots/sitemap, JavaScript parsing). Forms are recorded, never
-submitted. Output: `endpoints.txt`, `params.txt` (interesting names marked),
-`js_files.txt`.
-
-Phase 05 searches each site for unlinked paths with ffuf and a curated
-built-in list (`hunter/data/discover.txt`; your own via settings
-`discover.wordlist`). Catch-all pages are dropped using ffuf calibration plus
-the phase-03 baselines. Sensitive hits (`.git`, `.env`, API docs, actuator,
-backups, ...) are checked by content before they become a lead; secret values
-are never copied into notifications or logs. Output: `discovered.txt`,
-`leads.txt`.
-
-Both phases go highest priority first (your `focus` hosts first), save
-progress per site, skip dead upstreams, uniform gates and duplicate schemes,
-and have a time budget (settings `crawl` / `discover`: `minutes_per_site`,
-`max_hours`); what is left is reported and picked up on the next start.
-
-Takeover candidates from recon get a second look in phase 03: kept only if the
-CNAME target no longer resolves or the provider shows its "nothing here"
-page; hosts serving a live page (including a password page) are cleared.
-
-## Notice and react (AI review)
-
-Tools are run by code; judgment is added on top:
-
-- Tripwires run on every result set: most hits sharing one status and length
-  (catch-all page), an address answering most ports (firewall), wildcard DNS
-  (a made-up name resolves), a wall of 403/429 answers (WAF / rate limit).
-  Clear-cut noise is filtered in code at once.
-- After each tool step (recon, port scan, probe, crawl, discovery) and on any
-  tripwire, an AI reviewer reads a compact observation and answers: can these
-  results be trusted, and what deserves a closer look? It replies with actions
-  from a fixed list (filter a noise signature, mark a catch-all host,
-  deprioritise, focus, add an endpoint or lead, follow up a lead, search a
-  site again, note). Code checks each action against the scope and the step's
-  own results before applying it; anything else is refused and logged. You
-  get a Discord message with what it noticed and what it did.
-- Lead follow-up: an AI examines content-confirmed leads read-only (GET/HEAD
-  only, through the guard): reads an API spec and adds its endpoints, checks
-  whether a .git is readable, says what a config file exposes. Secret values
-  are masked before anything is stored or sent.
-- Every AI session that can reach a host runs with the guard's network
-  settings, so whatever it sends is scope-checked, rate-limited and logged.
-  The AI can never widen scope or raise the rate. Settings `review.enabled`
-  and `review.follow_up` turn the parts off.
 
 ## Target folder
 

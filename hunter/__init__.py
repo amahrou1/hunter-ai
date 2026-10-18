@@ -1,8 +1,9 @@
 """hunter-ai: an autonomous, policy-bound bug bounty runner.
 
-The orchestrator (plain Python) owns order, state, scope and completion.
-AI agents (Claude Code in headless mode, pointed at GLM / DeepSeek / Claude)
-are only called for judgment work inside a phase.
+Each testing phase is an AI agent (Claude Code in headless mode, pointed at
+GLM / DeepSeek / Claude) that decides and acts. The orchestrator owns order,
+state and completion, and the scope proxy and command checker enforce scope,
+rate and the program rules in code, so safety does not depend on the model.
 """
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"

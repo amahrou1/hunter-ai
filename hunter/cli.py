@@ -36,6 +36,7 @@ For each program:
   hunt tell <name>           list your messages and what they changed
   hunt chat <name>           talk to an AI about what the run found (it can pass on your instructions)
   hunt reset <name> [phase]  clear a stuck phase (e.g. 02-recon) so it runs again; no phase = all
+  hunt findings <name>       findings found so far, by severity, and report drafts
   hunt scope <name>          what the AI read as in scope / out of scope / unclear
   hunt scope <name> check <url>      would this URL be allowed?
   hunt handle <username>     your platform username (for required headers and emails)
@@ -96,6 +97,8 @@ def _load_target(name: str) -> target_mod.Target:
 
 def cmd_run(args) -> int:
     target = _load_target(args.target)
+    if getattr(args, 'until', None):
+        os.environ['HUNTER_UNTIL'] = args.until
     settings = config.load_settings()
     secrets = config.load_secrets()
     return Orchestrator(target, settings, secrets).run()
@@ -124,7 +127,8 @@ def cmd_start(args) -> int:
         # A window is left over from a finished run (it sits at the "press
         # Enter" prompt). No run is active, so close it and open a fresh one.
         subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
-    command = (f"{shlex.quote(HUNT)} run {shlex.quote(str(target.path))}; "
+    until = f" --until {shlex.quote(args.until)}" if getattr(args, "until", None) else ""
+    command = (f"{shlex.quote(HUNT)} run {shlex.quote(str(target.path))}{until}; "
                "echo; echo 'The run has ended. Press Enter to close this window.'; read _")
     created = subprocess.run(["tmux", "new-session", "-d", "-s", session, "-c", str(target.path),
                               "bash", "-lc", command], capture_output=True)
@@ -500,6 +504,36 @@ def cmd_chat(args) -> int:
     return 0
 
 
+def cmd_findings(args) -> int:
+    from hunter import assets as A
+    target = _load_target(args.target)
+    if not target.state_db.exists():
+        _print(f"{target.name} has not run yet.")
+        return 0
+    state = st.State(target.state_db)
+    try:
+        store = A.Assets(state.db)
+        rows = store.findings(args.status)
+        if not rows:
+            _print("No findings recorded yet." if not args.status else f"No findings with status {args.status}.")
+        order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+        for r in sorted(rows, key=lambda r: (order.get(r["severity"], 9), r["id"])):
+            _print(f"#{r['id']} [{r['status']}] {r['severity'] or '-'} {r['kind'] or '-'}: {r['title']}")
+            if r["url"]:
+                _print(f"      {r['url']}")
+            if args.full and r["summary"]:
+                _print(f"      {r['summary']}")
+        reports = target.output / "reports"
+        drafts = sorted(reports.glob("*.md")) if reports.is_dir() else []
+        if drafts:
+            _print(f"\nReport drafts ({len(drafts)}) in {reports}:")
+            for d in drafts:
+                _print(f"  {d.name}")
+    finally:
+        state.close()
+    return 0
+
+
 def cmd_reset(args) -> int:
     """Clear a stuck phase (or all phases) so the next `hunt start` runs it again.
 
@@ -556,6 +590,8 @@ def build_parser() -> argparse.ArgumentParser:
                        ("watch", cmd_watch), ("stop", cmd_stop), ("logs", cmd_logs)):
         p = sub.add_parser(name)
         p.add_argument("target")
+        if name in ("run", "start", "resume"):
+            p.add_argument("--until", help="stop after this phase, e.g. 02-recon (for testing phase by phase)")
         p.set_defaults(func=func)
     p = sub.add_parser("status")
     p.add_argument("target", nargs="?")
@@ -587,6 +623,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("chat")
     p.add_argument("target")
     p.set_defaults(func=cmd_chat)
+    p = sub.add_parser("findings")
+    p.add_argument("target")
+    p.add_argument("--status", choices=["candidate", "validated", "confirmed", "disproved", "reported"])
+    p.add_argument("--full", action="store_true", help="also show each finding's summary")
+    p.set_defaults(func=cmd_findings)
     p = sub.add_parser("reset")
     p.add_argument("target")
     p.add_argument("phase", nargs="?", help="a phase id like 02-recon; omit to reset all phases")

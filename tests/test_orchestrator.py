@@ -302,3 +302,18 @@ def test_failed_phase_cleared_on_code_update(make_target, settings_secrets, noti
     _orch(target, settings_secrets, notifier, [fixed]).run()
     assert log == ["03-boom"]
     assert st.State(target.state_db).phase("03-boom")["status"] == st.DONE
+
+
+def test_until_stops_after_named_phase(make_target, settings_secrets, notifier, monkeypatch):
+    target = make_target()
+    log = []
+    phases = [Recorder("00-intake", log=log), Recorder("02-recon", log=log), Recorder("03-probe", log=log)]
+    monkeypatch.setenv("HUNTER_UNTIL", "02-recon")
+    _orch(target, settings_secrets, notifier, phases).run()
+    assert log == ["00-intake", "02-recon"]            # stopped before probe
+    state = st.State(target.state_db)
+    assert state.phase("03-probe")["status"] == st.PENDING
+    # Without --until it continues from where it stopped.
+    monkeypatch.delenv("HUNTER_UNTIL")
+    _orch(target, settings_secrets, notifier, phases).run()
+    assert log == ["00-intake", "02-recon", "03-probe"]

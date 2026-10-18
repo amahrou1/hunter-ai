@@ -220,3 +220,24 @@ def test_cli_start_replaces_leftover_window(env, capsys, monkeypatch, tmp_path):
         assert cli._tmux_has(session)  # fresh window still open for hunt watch
     finally:
         subprocess.run(["tmux", "kill-server"], capture_output=True)
+
+
+def test_cli_findings_lists_and_points_to_reports(env, make_target, capsys):
+    from hunter import assets as A
+    from hunter import state as st
+    make_target("acme")
+    t = target_mod.Target(env["targets"] / "acme")
+    t.output.mkdir(parents=True, exist_ok=True)
+    state = st.State(t.state_db)
+    store = A.Assets(state.db)
+    store.add_finding("08-authz", "IDOR on /api/orders", kind="idor", severity="high",
+                      url="https://acme.test/api/orders/1", status="confirmed")
+    store.add_finding("10-misconfig", "Verbose error", kind="info-leak", severity="low", status="confirmed")
+    state.close()
+    (t.output / "reports").mkdir()
+    (t.output / "reports" / "1-idor.md").write_text("# IDOR\n")
+    assert cli.main(["findings", "acme"]) == 0
+    out = capsys.readouterr().out
+    assert "IDOR on /api/orders" in out and "high" in out
+    assert out.index("high") < out.index("low")        # sorted by severity
+    assert "1-idor.md" in out

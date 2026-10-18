@@ -61,6 +61,8 @@ class Orchestrator:
         self.ctx: Context | None = None
         self.ran: set[str] = set()
         self._rerun_due = False
+        import os as _os
+        self._until = (_os.environ.get("HUNTER_UNTIL") or "").strip()
         self._lock_handle = None
 
     # ------------------------------------------------------------------ main
@@ -210,8 +212,13 @@ class Orchestrator:
                 self.ran.discard(phase.id)
                 row = self.state.phase(phase.id)
             if not self._should_run(phase, row):
+                if self._until and phase.id == self._until:
+                    return  # already settled; stop here for a phase-by-phase run
                 continue
             self._run_phase(phase)
+            if self._until and phase.id == self._until:
+                self._log(f"Stopping after {phase.id} (--until). Continue with: hunt start {self.target.name}")
+                return
 
     def _operator(self) -> Operator:
         assert self.state is not None
