@@ -29,10 +29,15 @@ INTERESTING = ("admin", "api", "dev", "staging", "test", "internal", "portal", "
                "auth", "login", "vpn", "git", "jenkins", "gateway", "graphql", "console")
 
 
+# Bump to make every target probe all its hosts once more after a change
+# that alters what targets answer (headers, TLS handling).
+PROBE_GENERATION = "2"
+
+
 class ProbePhase(Phase):
     id = "03-probe"
     name = "Probe and fingerprint, per-host baselines"
-    version = "1.1"
+    version = "1.2"
     build_step = 4
     requires = ("00-intake", "02-recon")
 
@@ -44,6 +49,16 @@ class ProbePhase(Phase):
         # Only hosts not probed yet: a resumed or re-run probe continues where
         # it stopped, and a host added with `hunt tell` is probed on its own.
         scope = ctx.scope()
+        if ctx.state.get_meta("probe_generation") != PROBE_GENERATION:
+            # Results from an older generation were collected in a way that
+            # can change what targets answer (v0.5.2: the User-Agent was
+            # replaced, not appended, and bot protection blocked it). Probe
+            # everything once more.
+            if store.service_count():
+                ctx.log("results from an older probe are redone once (request headers changed)")
+            store.mark_probed(all_hosts, False)
+            store.db.execute("UPDATE services SET baseline=NULL")
+            ctx.state.set_meta("probe_generation", PROBE_GENERATION)
         hosts = [h for h in store.unprobed_hosts() if scope.host_in_scope(h)]
         self._operator = ctx.operator()
 

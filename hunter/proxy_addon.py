@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -30,6 +31,27 @@ from hunter import scope as sc  # noqa: E402
 
 BLOCK_HEADER = "X-Hunter-Blocked"
 TEXT_TYPES = ("text/", "json", "xml", "javascript", "x-www-form-urlencoded", "graphql")
+
+
+# Sent instead of a library's default User-Agent (Python-urllib, Go, curl...)
+# when the program asks for a tag to be appended: bot protection often
+# blocks library agents, which would hide the real application.
+BROWSER_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/129.0.0.0 Safari/537.36")
+_LIBRARY_UA = re.compile(r"python|go-http-client|curl/|wget/|aiohttp|okhttp|java/|libwww|"
+                         r"node-fetch|axios|projectdiscovery|nuclei|ffuf|katana|httpx|^\s*$", re.I)
+
+
+def user_agent(current: str, required: str, mode: str = "append") -> str:
+    """The User-Agent to send. mode "exact": the program's value as is.
+    mode "append" (default, the usual wording "append <user>@... to your
+    User-Agent"): keep the client's browser agent and add the tag once."""
+    if mode == "exact":
+        return required
+    if required.lower() in (current or "").lower():
+        return current
+    base = current if current and not _LIBRARY_UA.search(current) else BROWSER_UA
+    return f"{base} {required}"
 
 
 class TokenBucket:
@@ -102,7 +124,11 @@ class ScopeGuard:
             self._block(flow, f"{decision.reason}{': ' + decision.matched if decision.matched else ''}")
             return
         for name, value in scope.required_headers.items():
-            if name.lower() == "user-agent" or name not in flow.request.headers:
+            if name.lower() == "user-agent":
+                flow.request.headers["User-Agent"] = user_agent(
+                    flow.request.headers.get("User-Agent", ""), value,
+                    scope.rules.get("user_agent_mode") or "append")
+            elif name not in flow.request.headers:
                 flow.request.headers[name] = value
         if self.bucket is not None:
             await self.bucket.take()

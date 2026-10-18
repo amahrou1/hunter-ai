@@ -51,6 +51,7 @@ Then write the file ./{draft_file} with exactly this structure:
   "rate_limit": {{"requests_per_second": number or null, "quote": "exact text or null"}},
   "required_headers": [{{"name": "header name", "value": "header value as written", "quote": "exact text"}}],
   "user_agent": "required User-Agent value, or null",
+  "user_agent_mode": "append | exact | null",
   "account_rules": {{"self_registration": "allowed | forbidden | not_mentioned",
                     "email_requirement": "for example: use your @intigriti.me address, or null",
                     "quote": "exact text or null"}},
@@ -77,8 +78,11 @@ Rules for reading:
 7. required_headers: only headers the policy requires on every request
    (for example X-Bug-Bounty: <username>). Keep placeholders like <username>
    exactly as written.
-8. Every "quote" must be copied word for word from policy.txt.
-9. Write valid JSON only (double quotes, no comments, no trailing commas).
+8. user_agent_mode: "append" if the policy asks to add, append or include a
+   tag in the User-Agent; "exact" only if it says the User-Agent must be
+   exactly that value; null if no User-Agent rule.
+9. Every "quote" must be copied word for word from policy.txt.
+10. Write valid JSON only (double quotes, no comments, no trailing commas).
 
 When the file is written, read it back once to check it is valid JSON, then
 reply with the single word DONE.
@@ -329,6 +333,9 @@ def build_scope(draft: dict, policy_text: str, overrides_text: str, settings: di
         "effective_rps": effective,
         "rate_source": rate_source,
         "required_headers": headers,
+        # Default append: it satisfies "append/include" wording and keeps a
+        # browser-like agent; "exact" only when the policy demands the value.
+        "user_agent_mode": "exact" if draft.get("user_agent_mode") == "exact" else "append",
         "unresolved_headers": unresolved,
         "self_registration": accounts.get("self_registration") if accounts.get("self_registration") in REGISTRATION
         else "not_mentioned",
@@ -380,7 +387,7 @@ def render_review(scope: sc.Scope, build: BuildResult, target_name: str) -> str:
              f"- Automated scanning: {rules.get('automated_scanning')}",
              f"- Request rate used: {rules.get('effective_rps')} per second "
              f"(policy: {rules.get('policy_rps') or 'not stated'}; source: {rules.get('rate_source', '-')})",
-             f"- Required headers: {', '.join(f'{k}: {v}' for k, v in rules.get('required_headers', {}).items()) or 'none'}",
+             f"- Required headers: {_headers_text(rules)}",
              f"- Self-registration: {rules.get('self_registration')}",
              f"- Researcher email: {rules.get('researcher_email') or rules.get('email_requirement') or 'not required'}",
              "", "## In scope (will be tested)", ""]
@@ -403,3 +410,13 @@ def render_review(scope: sc.Scope, build: BuildResult, target_name: str) -> str:
     if build.review or build.problems:
         lines += ["", "## Notes", ""] + [f"- {v}" for v in build.problems + build.review]
     return "\n".join(lines) + "\n"
+
+
+def _headers_text(rules: dict) -> str:
+    parts = []
+    for name, value in (rules.get("required_headers") or {}).items():
+        if name.lower() == "user-agent" and rules.get("user_agent_mode", "append") != "exact":
+            parts.append(f"User-Agent: <browser agent> {value} (appended)")
+        else:
+            parts.append(f"{name}: {value}")
+    return ", ".join(parts) or "none"

@@ -213,3 +213,33 @@ def test_operator_avoid_is_enforced_live(proxy_env):
         assert [p for p, _ in target.seen] == ["/before", "/again"]
     finally:
         target.close()
+
+
+def test_user_agent_tag_is_appended_not_replaced(env, tmp_path):
+    """bol: "append <username>@intigriti.me to the User-Agent header". The
+    tag is added to a browser agent; library agents get a browser agent."""
+    scope = sc.Scope(in_scope=[sc.parse_asset("127.0.0.1")],
+                     rules={"effective_rps": 50, "required_headers": {"User-Agent": "amahrou1@intigriti.me"}})
+    scope_file = tmp_path / "out" / "scope.json"
+    sc.save(scope, scope_file)
+    proxy = ScopeProxy(scope_file, tmp_path / "out" / "logs", config.load_settings())
+    proxy.start()
+    target = Target()
+    try:
+        opener = _opener(proxy)
+        opener.open(f"http://127.0.0.1:{target.port}/lib", timeout=10).read()
+        opener.addheaders = [("User-Agent", "Mozilla/5.0 (Windows NT 10.0) Firefox/130.0")]
+        opener.open(f"http://127.0.0.1:{target.port}/browser", timeout=10).read()
+        agents = [h.get("User-Agent") for _, h in target.seen]
+        assert agents[0].startswith("Mozilla/5.0") and agents[0].endswith(" amahrou1@intigriti.me")
+        assert "Python-urllib" not in agents[0]
+        assert agents[1] == "Mozilla/5.0 (Windows NT 10.0) Firefox/130.0 amahrou1@intigriti.me"
+        # exact mode, picked up live
+        scope.rules["user_agent_mode"] = "exact"
+        time.sleep(1.1)
+        sc.save(scope, scope_file)
+        opener.open(f"http://127.0.0.1:{target.port}/exact", timeout=10).read()
+        assert target.seen[-1][1].get("User-Agent") == "amahrou1@intigriti.me"
+    finally:
+        target.close()
+        proxy.stop()
