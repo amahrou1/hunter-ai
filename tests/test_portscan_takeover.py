@@ -100,58 +100,33 @@ def test_takeover_cname_target_gone(monkeypatch):
     assert got == "candidate" and "does not resolve" in reason
 
 
-def test_probe_scans_ip_scope_and_probes_open_ports(env, make_target, settings_secrets, notifier, tmp_path,
-                                                    monkeypatch):
-    """IP-only program: the port scan finds a web server on an unusual port,
-    probe fingerprints it, and a sensitive open port becomes a lead."""
-    from hunter.phases import ProbePhase
-    from hunter.phases.base import Context
-    from hunter.proxy import mitmdump_bin
-    if mitmdump_bin() is None:
-        pytest.skip("mitmproxy not installed")
-    page = Page(200, "<html><title>ip app</title>ok</html>")
-    redis = socket.socket()
-    redis.bind(("127.0.0.1", 0))
-    redis.listen(4)
-    target = make_target("ipcorp", policy="In scope: 127.0.0.1 (single IP). Nothing else.")
+def _kit(target, monkeypatch):
+    from hunter.kit import Kit
+    monkeypatch.setenv("HUNTER_TARGET_DIR", str(target.path))
+    monkeypatch.setenv("HUNTER_PHASE", "03-probe")
+    return Kit()
+
+
+def test_hk_portscan_records_open_ports_and_verified_leads(env, make_target, monkeypatch):
+    """hk portscan on an IP scope: open ports are stored on the host, and a
+    sensitive port that answers its protocol becomes a confirmed lead."""
+    import argparse
+    from hunter import kit
+    target = make_target("ipcorp", policy="In scope: 10.0.0.0/30. Nothing else.")
     target.output.mkdir(parents=True, exist_ok=True)
-    sc.save(sc.Scope(in_scope=[sc.parse_asset("127.0.0.1")], rules={"effective_rps": 100}), target.scope_file)
-    tools = tmp_path / "tools"
-    tools.mkdir()
-    httpx = tools / "httpx"
-    httpx.write_text(
-        "#!/usr/bin/env python3\nimport sys, json, os, urllib.request\n"
-        "op = urllib.request.build_opener(urllib.request.ProxyHandler({'http': os.environ.get('HTTPS_PROXY')}))\n"
-        "for line in sys.stdin:\n"
-        "    t = line.strip()\n"
-        "    if not t: continue\n"
-        "    try: r = op.open('http://' + t + '/', timeout=5); body = r.read()\n"
-        "    except Exception: continue\n"
-        "    host, port = t.split(':')\n"
-        "    print(json.dumps({'input': t, 'url': 'http://' + t, 'port': int(port), 'status_code': r.status,\n"
-        "                      'title': 'ip app'}))\n")
-    httpx.chmod(0o755)
-    monkeypatch.setenv("HUNTER_TOOLS_DIR", str(tools))
-    settings = settings_secrets[0]
-    redis_port = redis.getsockname()[1]
-    settings["portscan"] = {"ports": [page.port, redis_port]}
-    monkeypatch.setitem(portscan.SENSITIVE_PORTS, redis_port, "Redis (test)")
-    state = st.State(target.state_db)
-    ctx = Context(target, state, settings, {"GLM_API_KEY": "k"}, notifier)
-    ctx.phase_id = "03-probe"
+    sc.save(sc.Scope(in_scope=[sc.parse_asset("10.0.0.0/30")], rules={"effective_rps": 100}), target.scope_file)
+    monkeypatch.setattr(portscan, "scan", lambda addrs, ports, rate, **kw: {"10.0.0.1": [443, 6379]})
+    monkeypatch.setattr(portscan, "verify",
+                        lambda a, p, ua="": "Redis answers PING without a password" if p == 6379 else None)
+    k = _kit(target, monkeypatch)
     try:
-        result = ProbePhase().run(ctx)
+        rc = kit.cmd_portscan(k, argparse.Namespace(ports=None))
     finally:
-        ctx.close()
-        page.close()
-        redis.close()
-    assert result.status == st.DONE, result.summary
-    store = A.Assets(state.db)
-    assert [(s["host"], s["port"]) for s in store.services()] == [("127.0.0.1", page.port)]
-    assert store.host_note("127.0.0.1")["open_ports"] == sorted([page.port, redis_port])
-    assert [l["kind"] for l in store.leads()] == ["exposed-service"]
-    assert "Port scan done" in notifier.titles()
-    state.close()
+        k.state.close()
+    assert rc == 0
+    store = A.Assets(st.State(target.state_db).db)
+    assert store.host_note("10.0.0.1")["open_ports"] == [443, 6379]
+    assert [(l["url"], l["status"]) for l in store.leads()] == [("tcp://10.0.0.1:6379", "signature-match")]
 
 
 def test_accepts_everything_heuristic():
@@ -198,35 +173,27 @@ def test_work_services_collapses_identical_pages(tmp_path):
     assert len(chosen) == 3 and "app.acme.test" in {r["host"] for r in chosen}
 
 
-def test_catch_all_address_gives_no_leads(make_target, settings_secrets, notifier, monkeypatch):
-    """bol: 79.170.100.2 "had" Telnet, SMB, MS SQL, Oracle, Docker... open.
-    An address answering on most ports is a firewall: no leads, and web
-    services found on its other ports are dropped."""
-    from hunter.phases import ProbePhase
-    from hunter.phases.base import Context
-    target = make_target("ipcorp")
+def test_catch_all_address_gives_no_leads(env, make_target, monkeypatch):
+    """bol pattern: an address answering on most ports is a firewall, not a
+    host full of services. hk portscan gives it no leads and keeps only the
+    usual web ports; a real neighbour still yields its verified lead."""
+    import argparse
+    from hunter import kit
+    target = make_target("ipcorp2", policy="In scope: 10.0.0.0/30. Nothing else.")
     target.output.mkdir(parents=True, exist_ok=True)
     sc.save(sc.Scope(in_scope=[sc.parse_asset("10.0.0.0/30")], rules={"effective_rps": 100}), target.scope_file)
     everything = list(portscan.PORTS)
     monkeypatch.setattr(portscan, "scan", lambda addrs, ports, rate, **kw: {
-        "10.0.0.1": [p for p in everything if p in ports],      # answers everything
-        "10.0.0.2": [443, 6379]})                                # a real host
-    monkeypatch.setattr(portscan, "verify", lambda a, p, ua="": "Redis answers PING without a password"
-                        if p == 6379 else None)
-    state = st.State(target.state_db)
-    store = A.Assets(state.db)
-    store.add_host("10.0.0.1", A.IN, "portscan")
-    store.upsert_service("10.0.0.1", 5432, "http", status=200)  # junk from an earlier scan
-    store.add_lead("exposed-service", "tcp://10.0.0.1:23", "03-probe", "port 23 open (Telnet)")
-    ctx = Context(target, state, settings_secrets[0], {"GLM_API_KEY": "k"}, notifier)
-    ctx.phase_id = "03-probe"
-    gaps = []
-    ProbePhase()._portscan(ctx, store, sc.load(target.scope_file), gaps)
-    leads = [(l["url"], l["status"]) for l in store.leads()]
-    assert leads == [("tcp://10.0.0.2:6379", "signature-match")]
+        "10.0.0.1": [p for p in everything if p in ports],      # answers everything (firewall)
+        "10.0.0.2": [443, 6379]})                               # a real host
+    monkeypatch.setattr(portscan, "verify",
+                        lambda a, p, ua="": "Redis answers PING without a password" if p == 6379 else None)
+    k = _kit(target, monkeypatch)
+    try:
+        kit.cmd_portscan(k, argparse.Namespace(ports=None))
+    finally:
+        k.state.close()
+    store = A.Assets(st.State(target.state_db).db)
+    assert [(l["url"], l["status"]) for l in store.leads()] == [("tcp://10.0.0.2:6379", "signature-match")]
     assert store.host_note("10.0.0.1")["accepts_all"] is True
     assert store.host_note("10.0.0.1")["open_ports"] == [443, 80, 8443, 8080]
-    assert not [s for s in store.services() if s["host"] == "10.0.0.1" and s["port"] == 5432]
-    message = notifier.sent[-1][1]
-    assert "accept a connection on every port" in message and "Redis answers PING" in message
-    state.close()

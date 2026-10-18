@@ -55,28 +55,33 @@ def _orch(target, settings_secrets, notifier, phases, **kw):
 
 
 def test_default_pipeline_runs_and_is_honest(make_target, settings_secrets, notifier, monkeypatch):
+    """The whole AI pipeline runs from one call: intake builds the scope (code
+    + the policy-reader AI), then every phase is an AI agent. With a fake agent
+    that does nothing, phases reach honest non-PENDING states and the run still
+    finishes cleanly end to end."""
     from pathlib import Path
+    from hunter.proxy import mitmdump_bin
+    if mitmdump_bin() is None:
+        pytest.skip("mitmproxy not installed")
     policies = Path(__file__).parent / "policies"
+    # Intake reads a real draft; the later AI phases get the fake agent too and
+    # simply produce no findings (handoff not written) -> PARTIAL/BLOCKED.
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "draft")
     monkeypatch.setenv("FAKE_CLAUDE_DRAFTS", str(policies / "intigriti_acme.draft.json"))
     settings_secrets[0]["researcher"]["handle"] = "amahrou1"
+    settings_secrets[0]["run"]["blocker_wait_minutes"] = 0
     target = make_target(policy=(policies / "intigriti_acme.txt").read_text())
     assert _orch(target, settings_secrets, notifier, all_phases()).run() == EXIT_OK
     state = st.State(target.state_db)
     rows = {r["phase_id"]: r for r in state.phases()}
     assert rows["00-intake"]["status"] == st.DONE
-    # 02-recon to 05-discover are real now; with no recon tools in the test env they
-    # finish NOT_APPLICABLE/PARTIAL/BLOCKED, not NOT_BUILT. The later phases are still placeholders.
-    built = {"00-intake", "02-recon", "03-probe", "04-map", "05-discover"}
-    assert all(r["status"] == st.NOT_BUILT for pid, r in rows.items() if pid not in built)
-    assert rows["02-recon"]["status"] != st.NOT_BUILT
-    manifest = json.loads((target.output / "inputs" / "manifest.json").read_text())
-    assert manifest["policy.txt"]["present"] and not manifest["reports.txt"]["present"]
+    # Every phase is built now: nothing is left NOT_BUILT or PENDING.
+    assert not [pid for pid, r in rows.items() if r["status"] in (st.NOT_BUILT, st.PENDING)]
+    assert len(rows) == 15
     assert (target.output / "run_summary.md").exists()
     assert notifier.titles()[0] == "Run started: acme"
     assert "Scope ready" in notifier.titles()
     assert notifier.titles()[-1] == "Run finished: acme"
-    assert notifier.sent[-1][2] == "warn"  # not-built phases are reported as gaps
 
 
 def test_resume_skips_finished_and_reruns_updated(make_target, settings_secrets, notifier):

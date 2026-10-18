@@ -22,6 +22,7 @@ from pathlib import Path
 
 from . import assets as A
 from . import config
+from . import paths
 from . import importers
 from . import scope as sc
 from . import state as st
@@ -370,9 +371,9 @@ def cmd_takeover(kit: Kit, args) -> int:
 
 
 def cmd_wordlist(kit: Kit, args) -> int:
-    from .phases.p05_discover import DEFAULT_WORDLIST
+    default = paths.REPO_DIR / "hunter" / "data" / "discover.txt"
     custom = config.load_settings().get("discover", {}).get("wordlist")
-    print(custom if custom and Path(custom).expanduser().is_file() else DEFAULT_WORDLIST)
+    print(custom if custom and Path(custom).expanduser().is_file() else default)
     return 0
 
 

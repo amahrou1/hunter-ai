@@ -133,38 +133,3 @@ class CatchAll:
 
     def close(self):
         self.server.shutdown()
-
-
-def test_discovery_filters_a_catch_all_site_by_itself(ctx, tmp_path, monkeypatch):
-    """The case from the old system: a fuzz returns hundreds of hits with the
-    same status and length. They are recognised and filtered without help;
-    the one real file (a different length) survives."""
-    from hunter.phases import DiscoverPhase
-    site = CatchAll()
-    words = tmp_path / "words.txt"
-    words.write_text("\n".join([f"path{i}" for i in range(60)] + ["backup.zip"]) + "\n")
-    tools = tmp_path / "tools"
-    tools.mkdir()
-    ffuf = tools / "ffuf"
-    ffuf.write_text(
-        "#!/usr/bin/env python3\nimport sys, json, urllib.request\n"
-        "a = sys.argv; base = a[a.index('-u') + 1]; words = open(a[a.index('-w') + 1]).read().split()\n"
-        "op = urllib.request.build_opener(urllib.request.ProxyHandler({'http': a[a.index('-x') + 1]}))\n"
-        "for w in words:\n"
-        "    url = base.replace('FUZZ', w); r = op.open(url, timeout=10); body = r.read()\n"
-        "    print(json.dumps({'url': url, 'status': r.status, 'length': len(body)}), flush=True)\n")
-    ffuf.chmod(0o755)
-    monkeypatch.setenv("HUNTER_TOOLS_DIR", str(tools))
-    ctx.settings["discover"] = {"wordlist": str(words), "minutes_per_site": 1}
-    ctx.settings["review"] = {"enabled": False, "follow_up": False}
-    store = ctx.assets()
-    store.add_host("127.0.0.1", A.IN, "t")
-    store.upsert_service("127.0.0.1", site.port, "http", url=f"http://127.0.0.1:{site.port}", status=200)
-    try:
-        result = DiscoverPhase().run(ctx)
-    finally:
-        site.close()
-    hits = [r["url"] for r in store.endpoints() if r["source"] == "discover"]
-    assert hits == [f"http://127.0.0.1:{site.port}/backup.zip"], result.summary
-    assert R.Reviewer(ctx).filters("127.0.0.1") == {(200, 20)}
-    assert [l["kind"] for l in store.leads()] == ["backup-file"]
