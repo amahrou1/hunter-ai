@@ -28,7 +28,7 @@ WATCH = ["policy.txt", "scope-overrides.txt"]
 class IntakePhase(Phase):
     id = "00-intake"
     name = "Intake: inputs, policy and scope guard"
-    version = "1.0"
+    version = "1.1"
     build_step = 3
 
     def run(self, ctx: Context) -> PhaseResult:
@@ -143,13 +143,16 @@ class IntakePhase(Phase):
             parts.append(f"Automated scanning is '{rules['automated_scanning']}' in this program: "
                          "the run will keep automation to a minimum.")
         if scope.ambiguities:
-            parts.append(f"Unclear, NOT tested ({len(scope.ambiguities)}):\n"
+            parts.append(f"Unclear assets, NOT tested ({len(scope.ambiguities)}):\n"
                          + short(f"{a['item']}: {a['why']}" for a in scope.ambiguities))
+        if scope.questions:
+            parts.append(f"Notes about the rules ({len(scope.questions)}), nothing held back:\n"
+                         + short((a["item"] for a in scope.questions), limit=6))
         if scope.unclassified_hosts:
             parts.append(f"Mentioned but not classified, NOT tested: {', '.join(scope.unclassified_hosts[:10])}")
         parts.append(f"Full review: {ctx.target.scope_review}\n"
                      f"Correct anything with scope-overrides.txt in {ctx.target.path}")
-        level = "warn" if scope.ambiguities or build.problems else "success"
+        level = "warn" if scope.ambiguities or scope.unclassified_hosts or build.problems else "success"
         ctx.notify("Scope ready", "\n\n".join(parts), level)
 
     def _check_guard(self, ctx: Context) -> tuple[bool, str]:

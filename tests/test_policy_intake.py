@@ -162,3 +162,14 @@ def test_missing_handle_blocks_until_override(env, acme, notifier, monkeypatch):
     (acme.path / "scope-overrides.txt").write_text("header X-Intigriti-Username: amahrou1\n")
     _run_intake(acme, notifier, _settings(""), monkeypatch, [POL / "intigriti_acme.draft.json"])
     assert st.State(acme.state_db).phase("00-intake")["status"] == st.DONE
+
+
+def test_rule_questions_are_not_held_back_assets(env):
+    text = (POL / "external_telco.txt").read_text()
+    s = policy.build_scope(_draft("external_telco"), text, "", _settings()).scope
+    assert [q["item"] for q in s.questions] == ["reward tiers per domain"]
+    assert all(policy.looks_like_asset(a["item"]) for a in s.ambiguities)
+    assert policy.looks_like_asset("*.foo.example.com")
+    assert policy.looks_like_asset("api.example.com (staging?)")
+    assert not policy.looks_like_asset("Report submission channel")
+    assert not policy.looks_like_asset("T Mobile US boundary: which telekom.com hosts belong to T-Mobile US")

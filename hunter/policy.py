@@ -196,7 +196,11 @@ def build_scope(draft: dict, policy_text: str, overrides_text: str, settings: di
 
     for amb in draft.get("ambiguities") or []:
         if isinstance(amb, dict) and amb.get("item"):
-            scope.ambiguities.append({"item": str(amb["item"]), "why": str(amb.get("why", ""))})
+            entry = {"item": str(amb["item"]), "why": str(amb.get("why", ""))}
+            if looks_like_asset(entry["item"]):
+                scope.ambiguities.append(entry)
+            else:
+                scope.questions.append(entry)
 
     # 3. Operator overrides win over everything the AI read.
     ins, outs, override_problems = sc.parse_overrides(overrides_text)
@@ -312,6 +316,16 @@ def build_scope(draft: dict, policy_text: str, overrides_text: str, settings: di
     return result
 
 
+def looks_like_asset(text: str) -> bool:
+    """True if an 'unclear' item names a host, URL or IP (it then means an
+    asset is held back); False for questions about rewards, reporting etc."""
+    try:
+        sc.parse_asset(text)
+        return True
+    except sc.AssetError:
+        return bool(sc.mentioned_hosts(text)) and len(text.split()) <= 6
+
+
 def _fill_placeholders(value: str, handle: str) -> str | None:
     """Replace <username>-style placeholders with the researcher handle.
     Returns None if a placeholder remains and no handle is known."""
@@ -341,8 +355,11 @@ def render_review(scope: sc.Scope, build: BuildResult, target_name: str) -> str:
     lines += [f"- `{a.raw}` ({a.kind})" for a in scope.in_scope] or ["- none"]
     lines += ["", "## Out of scope (blocked)", ""]
     lines += [f"- `{a.raw}` ({a.kind})" for a in scope.out_of_scope] or ["- none"]
-    lines += ["", "## Unclear (not tested until you decide)", ""]
+    lines += ["", "## Unclear assets (not tested until you decide)", ""]
     lines += [f"- `{a['item']}`: {a['why']}" for a in scope.ambiguities] or ["- none"]
+    if scope.questions:
+        lines += ["", "## Notes about the rules (for your information, nothing is held back)", ""]
+        lines += [f"- {a['item']}: {a['why']}" for a in scope.questions]
     lines += ["", "## Mentioned in the policy but not classified (not tested)", ""]
     lines += [f"- `{h}`" for h in scope.unclassified_hosts] or ["- none"]
     lines += ["", "## Not accepted vulnerability types", ""]

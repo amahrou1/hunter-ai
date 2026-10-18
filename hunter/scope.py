@@ -229,7 +229,8 @@ class Scope:
     program: dict = field(default_factory=dict)
     excluded_vulnerabilities: list[str] = field(default_factory=list)
     forbidden_actions: list[str] = field(default_factory=list)
-    ambiguities: list[dict] = field(default_factory=list)
+    ambiguities: list[dict] = field(default_factory=list)   # unclear assets: held back
+    questions: list[dict] = field(default_factory=list)     # unclear rules: information only
     unclassified_hosts: list[str] = field(default_factory=list)
     other_rules: list[str] = field(default_factory=list)
 
@@ -288,6 +289,7 @@ class Scope:
             "excluded_vulnerabilities": self.excluded_vulnerabilities,
             "forbidden_actions": self.forbidden_actions,
             "ambiguities": self.ambiguities,
+            "questions": self.questions,
             "unclassified_hosts": self.unclassified_hosts,
             "other_rules": self.other_rules,
         }
@@ -309,6 +311,7 @@ class Scope:
             excluded_vulnerabilities=list(data.get("excluded_vulnerabilities") or []),
             forbidden_actions=list(data.get("forbidden_actions") or []),
             ambiguities=list(data.get("ambiguities") or []),
+            questions=list(data.get("questions") or []),
             unclassified_hosts=list(data.get("unclassified_hosts") or []),
             other_rules=list(data.get("other_rules") or []),
         )
