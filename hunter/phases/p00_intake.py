@@ -31,6 +31,9 @@ class IntakePhase(Phase):
     version = "1.1"
     build_step = 3
 
+    def outputs_present(self, ctx: Context) -> bool:
+        return ctx.target.scope_file.exists()
+
     def run(self, ctx: Context) -> PhaseResult:
         self._snapshot(ctx)
         policy_text = ctx.target.input_text("policy.txt")

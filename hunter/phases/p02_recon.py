@@ -33,6 +33,10 @@ class ReconPhase(Phase):
     requires = ("00-intake",)
 
     def run(self, ctx: Context) -> PhaseResult:
+        if not ctx.target.scope_file.exists():
+            # Should not happen (the orchestrator reruns intake first), but
+            # never crash: ask for intake to run again.
+            return PhaseResult(st.BLOCKED, "scope.json is missing; intake must run again")
         scope = ctx.scope()
         store = ctx.assets()
         roots = scope.wildcard_roots()

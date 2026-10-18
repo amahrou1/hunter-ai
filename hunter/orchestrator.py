@@ -162,6 +162,14 @@ class Orchestrator:
         self.notifier.send(f"Run started: {self.target.name}", message, "info", target=self.target.name)
 
     # --------------------------------------------------------------- phases
+    def _outputs_ok(self, phase: Phase, row) -> bool:
+        if row["status"] not in st.SETTLED:
+            return True
+        try:
+            return phase.outputs_present(self.ctx)
+        except Exception:
+            return True
+
     def _should_run(self, phase: Phase, row) -> bool:
         if phase.id in self.ran:
             return False
@@ -180,6 +188,11 @@ class Orchestrator:
                 self.state.reset_phase(phase.id, f"code updated {row['version']} -> {phase.version}",
                                        reset_attempts=True)
                 row = self.state.phase(phase.id)
+            if not self._outputs_ok(phase, row):
+                self.state.reset_phase(phase.id, "its output files are missing; running it again",
+                                       reset_attempts=True)
+                self.ran.discard(phase.id)
+                row = self.state.phase(phase.id)
             if not self._should_run(phase, row):
                 continue
             self._run_phase(phase)
@@ -187,9 +200,13 @@ class Orchestrator:
     def _unmet_requirements(self, phase: Phase) -> list[str]:
         assert self.state is not None
         unmet = []
+        by_id = {p.id: p for p in self.phases}
         for required in getattr(phase, "requires", ()):
             row = self.state.phase(required)
+            req_phase = by_id.get(required)
             if row is None or row["status"] not in st.SETTLED:
+                unmet.append(required)
+            elif req_phase is not None and not self._outputs_ok(req_phase, row):
                 unmet.append(required)
         return unmet
 

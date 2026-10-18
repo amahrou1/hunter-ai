@@ -117,7 +117,15 @@ def cmd_start(args) -> int:
         _print(f"'{target.name}' is already running. Watch it with: hunt watch {target.name}")
         return 0
     if _tmux_has(session):
-        subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
+        # A session exists but the run is not active: it finished or is at the
+        # "press Enter" prompt. Reuse the window instead of racing to respawn.
+        _print(f"A window for '{target.name}' is already open. Resuming the run in it.")
+        subprocess.run(["tmux", "send-keys", "-t", session, "C-c", "Enter"], capture_output=True)
+        subprocess.run(["tmux", "send-keys", "-t", session,
+                        f"{shlex.quote(HUNT)} run {shlex.quote(str(target.path))}", "Enter"],
+                       capture_output=True)
+        _print(f"Watch it:  hunt watch {target.name}    Status: hunt status {target.name}")
+        return 0
     command = (f"{shlex.quote(HUNT)} run {shlex.quote(str(target.path))}; "
                "echo; echo 'The run has ended. Press Enter to close this window.'; read _")
     subprocess.run(["tmux", "new-session", "-d", "-s", session, "-c", str(target.path),

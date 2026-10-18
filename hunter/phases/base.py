@@ -156,6 +156,13 @@ class Phase:
     def run(self, ctx: Context) -> PhaseResult:  # pragma: no cover - interface
         raise NotImplementedError
 
+    def outputs_present(self, ctx: Context) -> bool:
+        """True if this phase's durable outputs still exist. A settled phase
+        whose outputs were deleted (for example scope.json removed by hand)
+        is rerun instead of silently leaving a dependent to crash. Default:
+        nothing to check."""
+        return True
+
 
 class PlannedPhase(Phase):
     """Placeholder for a phase that is designed but not built yet. It says

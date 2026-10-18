@@ -215,3 +215,69 @@ def test_interrupted_phase_restarts(make_target, settings_secrets, notifier):
 def test_phase_result_rejects_running():
     with pytest.raises(ValueError):
         PhaseResult(st.RUNNING, "x")
+
+
+class WritesOutput(Phase):
+    """A settled phase whose output is a file that can vanish."""
+    id, name, version = "00-intake", "intake", "1"
+
+    def __init__(self, log):
+        self.log = log
+
+    def run(self, ctx):
+        self.log.append(self.id)
+        (ctx.target.output).mkdir(parents=True, exist_ok=True)
+        ctx.target.scope_file.write_text('{"in_scope":[]}')
+        return PhaseResult(st.DONE, "ok")
+
+    def outputs_present(self, ctx):
+        return ctx.target.scope_file.exists()
+
+
+class NeedsScope(Phase):
+    id, name, version = "02-recon", "recon", "1"
+    requires = ("00-intake",)
+
+    def __init__(self, log):
+        self.log = log
+
+    def run(self, ctx):
+        self.log.append(self.id)
+        assert ctx.target.scope_file.exists(), "scope.json must exist when recon runs"
+        return PhaseResult(st.DONE, "ok")
+
+
+def test_missing_output_reruns_phase(make_target, settings_secrets, notifier):
+    target = make_target()
+    log = []
+    phases = [WritesOutput(log), NeedsScope(log)]
+    _orch(target, settings_secrets, notifier, phases).run()
+    assert log == ["00-intake", "02-recon"]
+    assert target.scope_file.exists()
+    # Delete the output and run again: intake must rerun (recon already DONE
+    # keeps its DB result, but the file is restored and nothing crashes).
+    target.scope_file.unlink()
+    code = _orch(target, settings_secrets, notifier, phases).run()
+    assert code == EXIT_OK
+    assert log[2] == "00-intake"            # intake reran first
+    assert target.scope_file.exists()       # output restored
+    state = st.State(target.state_db)
+    assert state.phase("02-recon")["status"] == st.DONE  # dependent not broken
+
+
+def test_dependent_blocks_if_required_output_gone(make_target, settings_secrets, notifier):
+    """If the required phase cannot rebuild its output, the dependent waits
+    rather than crashing."""
+    target = make_target()
+    log = []
+
+    class CannotRebuild(WritesOutput):
+        def run(self, ctx):
+            self.log.append(self.id)
+            return PhaseResult(st.DONE, "ok but writes nothing")
+
+    phases = [CannotRebuild(log), NeedsScope(log)]
+    code = _orch(target, settings_secrets, notifier, phases).run()
+    assert code == EXIT_OK
+    state = st.State(target.state_db)
+    assert state.phase("02-recon")["status"] == st.BLOCKED
