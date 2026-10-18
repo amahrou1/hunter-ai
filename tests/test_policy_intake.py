@@ -228,3 +228,45 @@ def test_forbidden_and_limited_without_number(env):
     lim = dict(base, automated_scanning="limited")
     s2 = policy.build_scope(lim, "*.ex.com limited scanning", "", _settings()).scope
     assert s2.rules["effective_rps"] == 2 and s2.rules["low_automation"] is True
+
+
+def test_ownership_scope_is_recorded_not_expanded(env):
+    text = (POL / "ownership_fincorp.txt").read_text()
+    build = policy.build_scope(_draft("ownership_fincorp"), text, "", _settings())
+    s = build.scope
+    assert s.rules["ownership_scope"] == {
+        "owner": "FinCorp Global", "quote_found": True,
+        "quote": "Any system or application owned and operated by FinCorp Global is in scope."}
+    assert [a.raw for a in s.in_scope] == ["www.fincorp-demo.com"]   # nothing guessed
+    assert not s.decide("api.fincorp-demo.com").allowed
+    assert "Ownership scope: assets owned by FinCorp Global" in policy.render_review(s, build, "fincorp")
+
+
+@pytest.mark.skipif(mitmdump_bin() is None, reason="mitmproxy not installed")
+def test_ownership_scope_asks_operator_then_uses_confirmed(env, make_target, notifier, monkeypatch):
+    target = make_target("fincorp", policy=(POL / "ownership_fincorp.txt").read_text())
+    _run_intake(target, notifier, _settings(), monkeypatch, [POL / "ownership_fincorp.draft.json"])
+    state = st.State(target.state_db)
+    assert state.phase("00-intake")["status"] == st.DONE      # the named host is tested meanwhile
+    assert "Blocked: Assets you confirm belong to FinCorp Global" in notifier.titles()
+    state.close()
+    (target.path / "scope-overrides.txt").write_text("in *.fincorp-demo.com\n")
+    notifier.sent.clear()
+    _run_intake(target, notifier, _settings(), monkeypatch, [POL / "ownership_fincorp.draft.json"])
+    assert not any(t.startswith("Blocked:") for t in notifier.titles())
+    assert sc.load(target.scope_file).decide("api.fincorp-demo.com").allowed
+
+
+def test_ownership_only_scope_blocks_with_clear_request(env, make_target, notifier, monkeypatch):
+    target = make_target("fincorp2", policy=(POL / "ownership_fincorp.txt").read_text())
+    _run_intake(target, notifier, _settings(), monkeypatch, [POL / "ownership_only.draft.json"])
+    assert st.State(target.state_db).phase("00-intake")["status"] == st.BLOCKED
+    assert "Blocked: Assets you confirm belong to FinCorp Global" in notifier.titles()
+    assert "Blocked: A clear scope" not in notifier.titles()
+
+
+def test_apex_only_scope_does_not_expand(env):
+    s = sc.Scope(in_scope=[sc.parse_asset("dell-demo.com")])
+    assert s.decide("dell-demo.com").allowed
+    assert not s.decide("www.dell-demo.com").allowed
+    assert s.wildcard_roots() == []                 # recon will not enumerate subdomains

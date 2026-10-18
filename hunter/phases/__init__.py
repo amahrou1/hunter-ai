@@ -7,6 +7,8 @@ from .base import Context, Phase, PhaseResult, PlannedPhase
 from .p00_intake import IntakePhase
 from .p02_recon import ReconPhase
 from .p03_probe import ProbePhase
+from .p04_map import MapPhase
+from .p05_discover import DiscoverPhase
 
 
 def all_phases() -> list[Phase]:
@@ -15,8 +17,8 @@ def all_phases() -> list[Phase]:
         PlannedPhase("01-intel", "Intelligence: past and disclosed reports", 5),
         ReconPhase(),
         ProbePhase(),
-        PlannedPhase("04-map", "Mapping and crawl, request inventory, JavaScript collection", 4),
-        PlannedPhase("05-discover", "Content and parameter discovery", 4),
+        MapPhase(),
+        DiscoverPhase(),
         PlannedPhase("06-js", "JavaScript analysis", 5),
         PlannedPhase("07-accounts", "Accounts: supplied and self-registered", 6),
         PlannedPhase("08-authz-logic", "Access control, business logic and API testing", 6),
@@ -29,4 +31,4 @@ def all_phases() -> list[Phase]:
     ]
 
 
-__all__ = ["Context", "Phase", "PhaseResult", "PlannedPhase", "ReconPhase", "ProbePhase", "all_phases"]
+__all__ = ["Context", "Phase", "PhaseResult", "PlannedPhase", "ReconPhase", "ProbePhase", "MapPhase", "DiscoverPhase", "all_phases"]

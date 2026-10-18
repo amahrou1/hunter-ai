@@ -61,11 +61,23 @@ class IntakePhase(Phase):
                 f"{len(scope.ambiguities)} unclear, {scope.rate_limit_rps}/s")
         self._announce(ctx, scope, build)
 
+        ownership = scope.rules.get("ownership_scope")
+        confirmed = sc.parse_overrides(overrides_text)[0]
+        if ownership and not confirmed:
+            owner = ownership["owner"]
+            ctx.block(f"Assets you confirm belong to {owner}",
+                      f"This program's scope is \"assets owned by {owner}\", without a full list. The run never "
+                      f"guesses what {owner} owns: it tests only what policy.txt names"
+                      + (f" ({len(scope.network_assets())} asset(s))" if scope.network_assets() else "")
+                      + f" and what you confirm. Add the domains, wildcards or IP ranges you have checked belong "
+                      f"to {owner} to scope-overrides.txt, one per line, for example:\n"
+                      f"in *.{owner.lower().split()[0]}.com\nin 203.0.113.0/24", WATCH)
         if not scope.network_assets():
-            ctx.block("A clear scope",
-                      "No web asset could be confirmed from policy.txt. Check the pasted policy, or add lines "
-                      "such as 'in *.example.com' to scope-overrides.txt.", WATCH)
-            return PhaseResult(st.BLOCKED, "no testable web asset in scope")
+            if not ownership:
+                ctx.block("A clear scope",
+                          "No web asset could be confirmed from policy.txt. Check the pasted policy, or add lines "
+                          "such as 'in *.example.com' to scope-overrides.txt.", WATCH)
+            return PhaseResult(st.BLOCKED, "no testable asset in scope yet")
         if scope.rules.get("unresolved_headers"):
             ctx.block("Value for a required header",
                       "The policy requires: " + "; ".join(scope.rules["unresolved_headers"])
@@ -142,6 +154,9 @@ class IntakePhase(Phase):
         ]
         if rules.get("required_headers"):
             parts.append("Headers: " + ", ".join(f"{k}: {v}" for k, v in rules["required_headers"].items()))
+        if rules.get("ownership_scope"):
+            parts.append(f"Scope by ownership: assets owned by {rules['ownership_scope']['owner']}. Only listed "
+                         "and confirmed assets are tested (see the Blocked message).")
         if rules.get("low_automation"):
             parts.append(f"Automated scanning is '{rules['automated_scanning']}' in this program: "
                          "the run will keep automation to a minimum.")

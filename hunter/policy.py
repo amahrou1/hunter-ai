@@ -52,6 +52,7 @@ Then write the file ./{draft_file} with exactly this structure:
   "required_headers": [{{"name": "header name", "value": "header value as written", "quote": "exact text"}}],
   "user_agent": "required User-Agent value, or null",
   "user_agent_mode": "append | exact | null",
+  "ownership_scope": {{"owner": "organisation name", "quote": "exact text"}} or null,
   "account_rules": {{"self_registration": "allowed | forbidden | not_mentioned",
                     "email_requirement": "for example: use your @intigriti.me address, or null",
                     "quote": "exact text or null"}},
@@ -81,8 +82,12 @@ Rules for reading:
 8. user_agent_mode: "append" if the policy asks to add, append or include a
    tag in the User-Agent; "exact" only if it says the User-Agent must be
    exactly that value; null if no User-Agent rule.
-9. Every "quote" must be copied word for word from policy.txt.
-10. Write valid JSON only (double quotes, no comments, no trailing commas).
+9. ownership_scope: only when the policy defines scope by ownership instead
+   of (or besides) a list, for example "any asset owned by ACME is in scope".
+   Do NOT turn that sentence into wildcards or guess the owner's domains or
+   IP ranges: put only assets the policy names in in_scope.
+10. Every "quote" must be copied word for word from policy.txt.
+11. Write valid JSON only (double quotes, no comments, no trailing commas).
 
 When the file is written, read it back once to check it is valid JSON, then
 reply with the single word DONE.
@@ -141,8 +146,11 @@ def validate_draft(data) -> list[str]:
     if accounts is not None and (not isinstance(accounts, dict)
                                  or accounts.get("self_registration") not in REGISTRATION):
         problems.append(f"'account_rules.self_registration' must be one of {', '.join(REGISTRATION)}")
-    if not data.get("in_scope"):
-        problems.append("'in_scope' is empty. If the policy really lists no assets, add an ambiguity explaining that")
+    owned = data.get("ownership_scope")
+    has_owner = isinstance(owned, dict) and str(owned.get("owner") or "").strip()
+    if not data.get("in_scope") and not has_owner and not data.get("ambiguities"):
+        problems.append("'in_scope' is empty. If the policy really lists no assets, add an ambiguity explaining "
+                        "that, or fill ownership_scope if the scope is 'assets owned by ...'")
     return problems
 
 
@@ -336,6 +344,7 @@ def build_scope(draft: dict, policy_text: str, overrides_text: str, settings: di
         # Default append: it satisfies "append/include" wording and keeps a
         # browser-like agent; "exact" only when the policy demands the value.
         "user_agent_mode": "exact" if draft.get("user_agent_mode") == "exact" else "append",
+        "ownership_scope": _ownership(draft, policy_text),
         "unresolved_headers": unresolved,
         "self_registration": accounts.get("self_registration") if accounts.get("self_registration") in REGISTRATION
         else "not_mentioned",
@@ -388,6 +397,8 @@ def render_review(scope: sc.Scope, build: BuildResult, target_name: str) -> str:
              f"- Request rate used: {rules.get('effective_rps')} per second "
              f"(policy: {rules.get('policy_rps') or 'not stated'}; source: {rules.get('rate_source', '-')})",
              f"- Required headers: {_headers_text(rules)}",
+             *([f"- Ownership scope: assets owned by {rules['ownership_scope']['owner']} "
+                f"(only listed and confirmed assets are tested)"] if rules.get("ownership_scope") else []),
              f"- Self-registration: {rules.get('self_registration')}",
              f"- Researcher email: {rules.get('researcher_email') or rules.get('email_requirement') or 'not required'}",
              "", "## In scope (will be tested)", ""]
@@ -410,6 +421,17 @@ def render_review(scope: sc.Scope, build: BuildResult, target_name: str) -> str:
     if build.review or build.problems:
         lines += ["", "## Notes", ""] + [f"- {v}" for v in build.problems + build.review]
     return "\n".join(lines) + "\n"
+
+
+def _ownership(draft: dict, policy_text: str) -> dict | None:
+    """'All assets owned by X' scopes. Recorded only, never expanded: the run
+    tests what the policy names plus what the operator confirms."""
+    value = draft.get("ownership_scope")
+    if not isinstance(value, dict) or not str(value.get("owner") or "").strip():
+        return None
+    quote = str(value.get("quote") or "").strip()
+    return {"owner": str(value["owner"]).strip()[:120], "quote": quote[:400],
+            "quote_found": bool(quote) and sc.quote_in_policy(quote, policy_text)}
 
 
 def _headers_text(rules: dict) -> str:

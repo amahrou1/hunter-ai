@@ -1,0 +1,41 @@
+{
+  "program_name": "FinCorp Global Responsible Disclosure Program",
+  "platform": "external",
+  "in_scope": [
+    {
+      "asset": "www.fincorp-demo.com",
+      "type": "domain",
+      "quote": "www.fincorp-demo.com",
+      "notes": ""
+    }
+  ],
+  "out_of_scope": [],
+  "excluded_vulnerabilities": [],
+  "forbidden_actions": [
+    "limiting availability",
+    "accessing or modifying data",
+    "social engineering",
+    "physical access"
+  ],
+  "automated_scanning": "not_mentioned",
+  "rate_limit": {
+    "requests_per_second": null,
+    "quote": null
+  },
+  "required_headers": [],
+  "user_agent": null,
+  "account_rules": {
+    "self_registration": "not_mentioned",
+    "email_requirement": null,
+    "quote": null
+  },
+  "ambiguities": [],
+  "other_rules": [
+    "Reports by email to bugbounty@telco-demo.de"
+  ],
+  "user_agent_mode": null,
+  "ownership_scope": {
+    "owner": "FinCorp Global",
+    "quote": "Any system or application owned and operated by FinCorp Global is in scope."
+  }
+}

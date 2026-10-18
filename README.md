@@ -105,6 +105,43 @@ a resumed run, or a host added with `hunt tell`, only probes hosts not probed ye
 through the scope proxy. Output: `hosts_in_scope.txt`, `recon.json`,
 `services.txt`, `services.json`.
 
+## Target types
+
+The scope model and the phases work for any program shape:
+
+| Scope | How it is handled |
+|---|---|
+| `*.example.com` | subdomains discovered (passive), resolved, scope-checked; the apex only if named |
+| `example.com` / `all.example.com` | that host only, never expanded |
+| URL with path or port | only that path / port is allowed by the guard |
+| IP address / CIDR range | built-in TCP connect scan (no root, no libpcap), paced by the program rate; large ranges get fewer ports (reported) |
+| "all assets owned by X" | recorded with its quote, never expanded by guessing; the run tests what the policy names plus what you confirm with `in ...` lines, and asks you on Discord |
+| mobile apps, source code | listed, not tested yet (reported as gaps) |
+
+## Mapping and discovery
+
+Phase 04 crawls every live in-scope site with katana through the guard (same
+host only, robots/sitemap, JavaScript parsing). Forms are recorded, never
+submitted. Output: `endpoints.txt`, `params.txt` (interesting names marked),
+`js_files.txt`.
+
+Phase 05 searches each site for unlinked paths with ffuf and a curated
+built-in list (`hunter/data/discover.txt`; your own via settings
+`discover.wordlist`). Catch-all pages are dropped using ffuf calibration plus
+the phase-03 baselines. Sensitive hits (`.git`, `.env`, API docs, actuator,
+backups, ...) are checked by content before they become a lead; secret values
+are never copied into notifications or logs. Output: `discovered.txt`,
+`leads.txt`.
+
+Both phases go highest priority first (your `focus` hosts first), save
+progress per site, skip dead upstreams, uniform gates and duplicate schemes,
+and have a time budget (settings `crawl` / `discover`: `minutes_per_site`,
+`max_hours`); what is left is reported and picked up on the next start.
+
+Takeover candidates from recon get a second look in phase 03: kept only if the
+CNAME target no longer resolves or the provider shows its "nothing here"
+page; hosts serving a live page (including a password page) are cleared.
+
 ## Target folder
 
 | File | Required | Purpose |

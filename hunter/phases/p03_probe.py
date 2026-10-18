@@ -37,18 +37,21 @@ PROBE_GENERATION = "2"
 class ProbePhase(Phase):
     id = "03-probe"
     name = "Probe and fingerprint, per-host baselines"
-    version = "1.2"
+    version = "1.3"
     build_step = 4
     requires = ("00-intake", "02-recon")
 
     def run(self, ctx: Context) -> PhaseResult:
         store = ctx.assets()
+        scope = ctx.scope()
+        gaps: list[str] = []
+        # IP and CIDR scope entries: find open ports first (adds IP hosts).
+        self._portscan(ctx, store, scope, gaps)
         all_hosts = [r["host"] for r in store.hosts(scope=A.IN, resolved=True)]
         if not all_hosts:
-            return PhaseResult(st.NOT_APPLICABLE, "no resolved in-scope hosts to probe")
+            return PhaseResult(st.NOT_APPLICABLE, "no resolved in-scope hosts to probe", gaps=gaps)
         # Only hosts not probed yet: a resumed or re-run probe continues where
         # it stopped, and a host added with `hunt tell` is probed on its own.
-        scope = ctx.scope()
         if ctx.state.get_meta("probe_generation") != PROBE_GENERATION:
             # Results from an older generation were collected in a way that
             # can change what targets answer (v0.5.2: the User-Agent was
@@ -70,28 +73,122 @@ class ProbePhase(Phase):
             return PhaseResult(st.BLOCKED, "httpx not installed")
 
         ctx.log(f"{len(hosts)} host(s) to probe ({len(all_hosts) - len(hosts)} already done)")
-        new_services = self._probe(ctx, store, binary, hosts) if hosts else 0
+        # Hosts found by the port scan are probed on the ports found open;
+        # named hosts on the usual web ports.
+        port_targets, named = [], []
+        for host in hosts:
+            open_ports = store.host_note(host).get("open_ports")
+            if open_ports:
+                port_targets += [f"{host}:{p}" for p in open_ports]
+            else:
+                named.append(host)
+        new_services = self._probe(ctx, store, binary, named) if named else 0
+        if port_targets:
+            new_services += self._probe(ctx, store, binary, port_targets, ports=False,
+                                        mark=[h for h in hosts if h not in named])
         baselined = self._baselines(ctx, store)
+        takeovers = self._takeovers(ctx, store)
         self._write_views(ctx, store)
+        store.write_leads(ctx.target.output / "leads.txt")
         total = store.service_count()
         if hosts or baselined:
             self._announce(ctx, len(hosts), new_services, baselined)
 
+        summary = (f"{total} live web service(s) across {len(all_hosts)} host(s); "
+                   f"{new_services} found this time, {baselined} newly baselined")
+        if takeovers:
+            summary += "; " + takeovers
         if total == 0:
-            return PhaseResult(st.PARTIAL, f"{len(all_hosts)} hosts probed, no live web service found")
-        return PhaseResult(st.DONE, f"{total} live web service(s) across {len(all_hosts)} host(s); "
-                           f"{new_services} found this time, {baselined} newly baselined")
+            return PhaseResult(st.PARTIAL, f"{len(all_hosts)} hosts probed, no live web service found", gaps=gaps)
+        return PhaseResult(st.PARTIAL if gaps else st.DONE, summary, gaps=gaps)
+
+    # ----------------------------------------------------------- port scan
+    def _portscan(self, ctx: Context, store: A.Assets, scope, gaps: list[str]) -> None:
+        from .. import portscan
+        seeds = [line.strip() for line in ctx.target.input_text("ips.txt").splitlines()
+                 if line.strip() and not line.startswith("#")]
+        cfg = {"max_probes": 2_000_000, **ctx.settings.get("portscan", {})}
+        work = portscan.plan(scope, seeds, max_probes=int(cfg["max_probes"]),
+                             ports=[int(p) for p in cfg.get("ports") or []] or None)
+        if not work.addresses:
+            return
+        key = hashlib.sha256(json.dumps([work.addresses, work.ports]).encode()).hexdigest()[:16]
+        if ctx.state.get_meta("portscan_key") == key:
+            return  # same addresses and ports as last time: already done
+        for note in work.skipped + ([work.reduced] if work.reduced else []):
+            ctx.log(note)
+            gaps.append(note)
+        rate = max(1.0, float(scope.rate_limit_rps))
+        minutes = len(work.addresses) * len(work.ports) / rate / 60
+        ctx.log(f"port scan: {len(work.addresses)} address(es) x {len(work.ports)} port(s) "
+                f"at {rate:g}/s (about {minutes:.0f} min)")
+        found = portscan.scan(work.addresses, work.ports, rate)
+        exposed = []
+        for address, ports in found.items():
+            store.add_host(address, A.IN, "portscan")
+            store.set_resolution(address, [address])
+            store.mark_probed([address], False)
+            store.set_host_note(address, open_ports=ports)
+            for port in ports:
+                label = portscan.SENSITIVE_PORTS.get(port)
+                if label and store.add_lead("exposed-service", f"tcp://{address}:{port}", "03-probe",
+                                            f"port {port} open ({label}) on the internet"):
+                    exposed.append(f"{address}:{port} {label}")
+        ctx.state.set_meta("portscan_key", key)
+        open_count = sum(len(p) for p in found.values())
+        ctx.log(f"port scan: {open_count} open port(s) on {len(found)} address(es)")
+        lines = [f"Addresses scanned: {len(work.addresses)} (ports each: {len(work.ports)})",
+                 f"Open ports: {open_count} on {len(found)} address(es)"]
+        if work.reduced:
+            lines.append(work.reduced)
+        if exposed:
+            lines.append("Exposed services worth a look (NOT yet validated):")
+            lines += [f"- {e}" for e in exposed[:10]]
+        ctx.notify("Port scan done", "\n".join(lines), "warn" if exposed else "info")
+
+    # ------------------------------------------------------------ takeover
+    def _takeovers(self, ctx: Context, store: A.Assets) -> str:
+        from .. import takeover
+        candidates = [r for r in store.takeover_candidates()
+                      if "takeover_check" not in store.host_note(r["host"])]
+        if not candidates:
+            return ""
+        opener = takeover.opener_for(ctx.proxy())
+        kept = cleared = 0
+        for row in candidates:
+            verdict, reason = takeover.check(row["host"], row["cname"], opener)
+            if verdict == "cleared":
+                store.clear_takeover(row["host"], reason)
+                cleared += 1
+            elif verdict == "candidate":
+                store.set_host_note(row["host"], takeover_check=reason)
+                store.add_lead("takeover", f"https://{row['host']}/", "03-probe",
+                               f"CNAME {row['cname']}: {reason}", status="signature-match")
+                kept += 1
+            ctx.log(f"takeover check {row['host']}: {verdict} ({reason})")
+        if kept:
+            ctx.notify("Possible subdomain takeover", f"{kept} host(s) show real signs of a dangling record "
+                       f"(NOT yet validated). See leads.txt.", "warn")
+        return f"takeover candidates: {kept} kept, {cleared} cleared (in use)"
 
     # ------------------------------------------------------------- probing
-    def _probe(self, ctx: Context, store: A.Assets, binary, hosts: list[str]) -> int:
+    def _probe(self, ctx: Context, store: A.Assets, binary, hosts: list[str], ports: bool = True,
+               mark: list[str] | None = None) -> int:
+        """hosts: names (probed on the usual web ports) or host:port pairs
+        (ports=False). mark: the host names to record as probed."""
         runner = ctx.active_runner()
-        run = runner.run("httpx", [
+        cmd = [
             str(binary), "-silent", "-json", "-nc", "-follow-host-redirects",
             "-status-code", "-title", "-tech-detect", "-web-server",
             "-content-type", "-content-length", "-hash", "sha256",
-            "-ports", "80,443,8080,8443", "-timeout", "15", "-retries", "1",
+            "-timeout", "15", "-retries", "1",
             "-rate-limit", str(max(1, int(ctx.scope().rate_limit_rps))),
-        ], name="httpx-probe", timeout_s=3600, stdin_lines=hosts)
+        ]
+        if ports:
+            cmd += ["-ports", "80,443,8080,8443"]
+        run = runner.run("httpx", cmd, name="httpx-probe" if ports else "httpx-probe-ports",
+                         timeout_s=3600, stdin_lines=hosts)
+        hosts = mark if mark is not None else hosts
 
         count = 0
         answered = set()

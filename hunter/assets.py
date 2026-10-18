@@ -13,6 +13,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit
 
 # Host classification
 IN = "in_scope"
@@ -54,6 +55,34 @@ CREATE TABLE IF NOT EXISTS services (
     UNIQUE (host, port, scheme)
 );
 CREATE INDEX IF NOT EXISTS idx_services_host ON services(host);
+CREATE TABLE IF NOT EXISTS endpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host TEXT NOT NULL,
+    method TEXT NOT NULL,
+    url TEXT NOT NULL,
+    template TEXT NOT NULL,          -- scheme://host:port/path?sorted&param&names
+    params TEXT NOT NULL DEFAULT '[]',
+    body TEXT,
+    source TEXT NOT NULL,            -- crawl, js, discover, robots, ...
+    status INTEGER,
+    content_type TEXT,
+    length INTEGER,
+    is_js INTEGER NOT NULL DEFAULT 0,
+    first_seen TEXT NOT NULL,
+    UNIQUE (method, template)
+);
+CREATE INDEX IF NOT EXISTS idx_endpoints_host ON endpoints(host);
+CREATE TABLE IF NOT EXISTS leads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,              -- exposed-git, env-file, api-docs, takeover, ...
+    url TEXT NOT NULL,
+    host TEXT NOT NULL,
+    evidence TEXT,
+    status TEXT NOT NULL DEFAULT 'unverified',   -- unverified | signature-match | dismissed
+    source TEXT NOT NULL,
+    first_seen TEXT NOT NULL,
+    UNIQUE (kind, url)
+);
 """
 
 # Hosts whose A/AAAA or CNAME point at these are almost never the program's
@@ -76,6 +105,24 @@ TAKEOVER_FINGERPRINTS = (
     "helpscoutdocs.com", "wpengine.com", "azurewebsites.net", "cloudapp.net",
     "trafficmanager.net", "zendesk.com", "desk.com",
 )
+
+
+def endpoint_template(url: str) -> tuple[str, str, list[str]]:
+    """(template, host, parameter names) for deduplication: same scheme,
+    host, port and path, and the same set of query parameter names."""
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port
+    except ValueError:
+        return "", "", []
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return "", "", []
+    host = parts.hostname.lower()
+    port = port or (443 if parts.scheme == "https" else 80)
+    names = sorted({k for k, _ in parse_qsl(parts.query, keep_blank_values=True)})
+    path = parts.path or "/"
+    template = f"{parts.scheme}://{host}:{port}{path}" + ("?" + "&".join(names) if names else "")
+    return template, host, names
 
 
 def now() -> str:
@@ -110,6 +157,10 @@ class Assets:
         self._migrate()
 
     def _migrate(self) -> None:
+        service_cols = {row[1] for row in self.db.execute("PRAGMA table_info(services)")}
+        for column in ("crawled", "discovered"):
+            if column not in service_cols:
+                self.db.execute(f"ALTER TABLE services ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(hosts)")}
         if "probed" not in columns:
             self.db.execute("ALTER TABLE hosts ADD COLUMN probed INTEGER NOT NULL DEFAULT 0")
@@ -220,6 +271,97 @@ class Assets:
 
     def service_count(self) -> int:
         return self.db.execute("SELECT COUNT(*) AS n FROM services").fetchone()["n"]
+
+    def mark_service(self, service_id: int, column: str, value: bool = True) -> None:
+        assert column in ("crawled", "discovered")
+        self.db.execute(f"UPDATE services SET {column}=? WHERE id=?", (int(value), service_id))
+
+    def work_services(self, scope, column: str) -> list[sqlite3.Row]:
+        """Services worth crawling or fuzzing, highest priority first, not
+        done yet: in scope now, not a dead upstream (5xx), not a gate that
+        answers every path the same, and one scheme per host:port pair
+        (HTTPS preferred) so the same site is not done twice."""
+        assert column in ("crawled", "discovered")
+        rows = list(self.db.execute(
+            f"SELECT * FROM services WHERE {column}=0 AND priority>0 ORDER BY priority DESC, host, port"))
+        chosen, seen = [], set()
+        all_rows = list(self.db.execute("SELECT host, port, scheme FROM services"))
+        https_hosts = {r["host"] for r in all_rows if r["scheme"] == "https"}
+        for row in rows:
+            if not scope.host_in_scope(row["host"]):
+                continue
+            status = row["status"] or 0
+            if status >= 500:
+                continue
+            kind = json.loads(row["baseline"]).get("kind") if row["baseline"] else None
+            if kind == "uniform_gate":
+                continue
+            if row["scheme"] == "http" and row["port"] == 80 and row["host"] in https_hosts:
+                continue
+            key = (row["host"], row["port"])
+            if key in seen:
+                continue
+            seen.add(key)
+            chosen.append(row)
+        return chosen
+
+    # endpoints ------------------------------------------------------------
+    def add_endpoint(self, method: str, url: str, source: str, *, body: str | None = None,
+                     status: int | None = None, content_type: str = "", length: int | None = None) -> bool:
+        """Store a request we have seen. Deduplicated by method + URL shape
+        (same path, same parameter names). Returns True if it was new."""
+        template, host, params = endpoint_template(url)
+        if not template:
+            return False
+        is_js = int(urlsplit(url).path.lower().endswith((".js", ".mjs")))
+        cur = self.db.execute(
+            "INSERT OR IGNORE INTO endpoints(host, method, url, template, params, body, source, status, "
+            "content_type, length, is_js, first_seen) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (host, method.upper(), url, template, json.dumps(params), body, source, status,
+             (content_type or "")[:120], length, is_js, now()))
+        return cur.rowcount > 0
+
+    def endpoints(self, host: str | None = None) -> list[sqlite3.Row]:
+        if host:
+            return list(self.db.execute("SELECT * FROM endpoints WHERE host=? ORDER BY url", (host,)))
+        return list(self.db.execute("SELECT * FROM endpoints ORDER BY host, url"))
+
+    def endpoint_count(self) -> int:
+        return self.db.execute("SELECT COUNT(*) AS n FROM endpoints").fetchone()["n"]
+
+    # leads ----------------------------------------------------------------
+    def add_lead(self, kind: str, url: str, source: str, evidence: str = "",
+                 status: str = "unverified") -> bool:
+        host = (urlsplit(url).hostname or url).lower()
+        cur = self.db.execute(
+            "INSERT OR IGNORE INTO leads(kind, url, host, evidence, status, source, first_seen) "
+            "VALUES(?,?,?,?,?,?,?)", (kind, url, host, evidence[:2000], status, source, now()))
+        return cur.rowcount > 0
+
+    def leads(self, status: str | None = None) -> list[sqlite3.Row]:
+        if status:
+            return list(self.db.execute("SELECT * FROM leads WHERE status=? ORDER BY kind, url", (status,)))
+        return list(self.db.execute("SELECT * FROM leads ORDER BY kind, url"))
+
+    def host_note(self, host: str) -> dict:
+        row = self.db.execute("SELECT notes FROM hosts WHERE host=?", (host,)).fetchone()
+        try:
+            return json.loads(row["notes"]) if row and row["notes"] else {}
+        except ValueError:
+            return {}
+
+    def set_host_note(self, host: str, **values) -> None:
+        note = self.host_note(host)
+        note.update(values)
+        self.db.execute("UPDATE hosts SET notes=? WHERE host=?", (json.dumps(note, sort_keys=True), host))
+
+    def clear_takeover(self, host: str, reason: str) -> None:
+        self.db.execute("UPDATE hosts SET takeover_candidate=0 WHERE host=?", (host,))
+        self.set_host_note(host, takeover_check=reason)
+
+    def write_leads(self, path: Path) -> None:
+        lines = [f"[{r['status']}] {r['kind']:<15} {r['url']}  - {r['evidence'] or ''}" for r in self.leads()]
+        path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
     def set_baseline(self, service_id: int, baseline: dict) -> None:
         self.db.execute("UPDATE services SET baseline=?, last_seen=? WHERE id=?",

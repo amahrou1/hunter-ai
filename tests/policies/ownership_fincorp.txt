@@ -1,0 +1,11 @@
+FinCorp Global Responsible Disclosure Program
+
+Scope
+Any system or application owned and operated by FinCorp Global is in scope.
+This includes, but is not limited to, www.fincorp-demo.com.
+
+Out of scope
+Third-party services and vendors. Denial of service and social engineering.
+
+Rules
+Do not access customer data. Report findings to security@fincorp-demo.com.
