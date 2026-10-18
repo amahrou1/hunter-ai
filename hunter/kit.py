@@ -39,6 +39,8 @@ Inventory (read)
   hk services [--todo crawled|discovered] [--limit N]     highest priority first
   hk endpoints [--host H] [--source S] [--limit N]
   hk leads [--status S]
+  hk finding add --title T --kind K --severity S --url U [--summary ..] [--steps ..] [--impact ..] [--cvss ..]
+  hk finding list|show <id>|set <id> --status validated|confirmed|disproved
   hk handoff                       what earlier phases reported
 
 Inventory (write)
@@ -314,24 +316,11 @@ def cmd_portscan(kit: Kit, args) -> int:
 
 
 def cmd_baseline(kit: Kit, args) -> int:
-    from .phases.p03_probe import ProbePhase
-    probe = ProbePhase()
-    opener = kit.opener()
+    from . import webprobe
     scope = kit.scope()
-    done = 0
-    services = kit.store.services()
-    for index, svc in enumerate(services):
-        if index % 10 == 0:
-            kit.state.set_progress(kit.phase, "not-found baselines", index, len(services), "sites")
-        if not scope.host_in_scope(svc["host"]):
-            continue
-        if svc["baseline"] and json.loads(svc["baseline"]).get("kind") != "unknown":
-            continue
-        import secrets as _s
-        base = svc["url"].rstrip("/")
-        samples = [probe._fetch(opener, f"{base}/hunter-{_s.token_hex(8)}/does-not-exist") for _ in range(2)]
-        kit.store.set_baseline(svc["id"], probe._classify(probe._fetch(opener, base + "/"), samples))
-        done += 1
+    opener = webprobe.opener_through(os.environ.get("HUNTER_PROXY", ""), os.environ.get("SSL_CERT_FILE"))
+    done = webprobe.build_baselines(kit.store, scope, opener,
+                                    lambda i, n: kit.state.set_progress(kit.phase, "not-found baselines", i, n, "sites"))
     kinds = {}
     for svc in kit.store.services():
         kind = json.loads(svc["baseline"]).get("kind") if svc["baseline"] else None
@@ -341,13 +330,25 @@ def cmd_baseline(kit: Kit, args) -> int:
 
 
 def cmd_check_content(kit: Kit, args) -> int:
-    from .phases.p05_discover import DiscoverPhase
+    from . import signatures, webprobe
     if not kit.scope().decide_url(args.url).allowed:
         print("BLOCKED: not in scope")
         return 1
-    lead = DiscoverPhase()._check(kit.store, kit.opener(), args.url)
-    print(f"CONFIRMED lead: {lead}" if lead else "no signature match (not a known sensitive file, or not what the "
-          "name suggests)")
+    opener = webprobe.opener_through(os.environ.get("HUNTER_PROXY", ""), os.environ.get("SSL_CERT_FILE"))
+    try:
+        with opener.open(args.url, timeout=20) as resp:
+            body = resp.read(65536)
+    except Exception as exc:  # noqa: BLE001
+        print(f"could not fetch: {exc}")
+        return 1
+    path = args.url.split("?", 1)[0]
+    matches = signatures.check(path, body)
+    if not matches:
+        print("no signature match (not a known sensitive file, or not what the name suggests)")
+        return 0
+    for kind, evidence in matches:
+        kit.store.add_lead(kind, args.url, f"ai:{kit.phase}", evidence, status="signature-match")
+        print(f"CONFIRMED lead: {kind} - {evidence}")
     return 0
 
 
@@ -372,6 +373,38 @@ def cmd_wordlist(kit: Kit, args) -> int:
     from .phases.p05_discover import DEFAULT_WORDLIST
     custom = config.load_settings().get("discover", {}).get("wordlist")
     print(custom if custom and Path(custom).expanduser().is_file() else DEFAULT_WORDLIST)
+    return 0
+
+
+def cmd_finding(kit: Kit, args) -> int:
+    from .review import mask
+    store = kit.store
+    if args.action == "add":
+        if not args.title:
+            print("finding add needs --title"); return 1
+        fid = store.add_finding(kit.phase, args.title, kind=args.kind, severity=args.severity,
+                                url=args.url, host=(args.host or ""), summary=mask(args.summary or ""),
+                                steps=mask(args.steps or ""), impact=mask(args.impact or ""),
+                                cvss=args.cvss, evidence=mask(args.evidence or ""),
+                                status="candidate")
+        print(json.dumps({"finding_id": fid}))
+    elif args.action == "set":
+        fields = {k: getattr(args, k) for k in ("title", "kind", "severity", "status", "host", "url",
+                                                "summary", "steps", "impact", "cvss", "evidence")
+                  if getattr(args, k) is not None}
+        for k in ("summary", "steps", "impact", "evidence"):
+            if k in fields:
+                fields[k] = mask(fields[k])
+        store.set_finding(int(args.id), **fields)
+        print(f"finding {args.id} updated")
+    elif args.action == "show":
+        row = store.finding(int(args.id))
+        print(json.dumps(dict(row) if row else {}, indent=1, default=str))
+    else:  # list
+        rows = store.findings(args.status)
+        text = "\n".join(f"{r['id']:>4} [{r['status']}] {r['severity'] or '-':<8} {r['kind'] or '-':<12} "
+                         f"{r['title']}  {r['url'] or ''}" for r in rows)
+        _print([dict(r) for r in rows], args.json, text)
     return 0
 
 
@@ -432,6 +465,13 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("check-content"); a.add_argument("url"); a.set_defaults(func=cmd_check_content)
     sub.add_parser("takeover").set_defaults(func=cmd_takeover)
     sub.add_parser("wordlist").set_defaults(func=cmd_wordlist)
+    a = sub.add_parser("finding"); a.add_argument("action", choices=["add", "set", "list", "show"])
+    a.add_argument("id", nargs="?"); a.add_argument("--title"); a.add_argument("--kind")
+    a.add_argument("--severity", choices=["info", "low", "medium", "high", "critical"])
+    a.add_argument("--status", choices=["candidate", "validated", "confirmed", "disproved", "reported"])
+    a.add_argument("--host"); a.add_argument("--url"); a.add_argument("--summary"); a.add_argument("--steps")
+    a.add_argument("--impact"); a.add_argument("--cvss"); a.add_argument("--evidence")
+    a.add_argument("--json", action="store_true"); a.set_defaults(func=cmd_finding)
     a = sub.add_parser("progress"); a.add_argument("step"); a.add_argument("done", type=int)
     a.add_argument("total", type=int); a.add_argument("unit", nargs="?", default="items")
     a.set_defaults(func=cmd_progress)

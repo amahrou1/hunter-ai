@@ -72,6 +72,23 @@ CREATE TABLE IF NOT EXISTS endpoints (
     UNIQUE (method, template)
 );
 CREATE INDEX IF NOT EXISTS idx_endpoints_host ON endpoints(host);
+CREATE TABLE IF NOT EXISTS findings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    phase TEXT NOT NULL,
+    title TEXT NOT NULL,
+    kind TEXT,                       -- idor, xss, ssrf, info-leak, takeover, ...
+    severity TEXT,                   -- info | low | medium | high | critical
+    status TEXT NOT NULL DEFAULT 'candidate',  -- candidate|validated|confirmed|disproved|reported
+    host TEXT,
+    url TEXT,
+    summary TEXT,
+    steps TEXT,
+    impact TEXT,
+    cvss TEXT,
+    evidence TEXT,
+    created TEXT NOT NULL,
+    updated TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS leads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     kind TEXT NOT NULL,              -- exposed-git, env-file, api-docs, takeover, ...
@@ -378,3 +395,33 @@ class Assets:
     def set_baseline(self, service_id: int, baseline: dict) -> None:
         self.db.execute("UPDATE services SET baseline=?, last_seen=? WHERE id=?",
                         (json.dumps(baseline), now(), service_id))
+
+    # findings -------------------------------------------------------------
+    def add_finding(self, phase: str, title: str, **fields) -> int:
+        cols = {"phase": phase, "title": title, "created": now(), "updated": now(),
+                "status": fields.pop("status", "candidate")}
+        allowed = ("kind", "severity", "host", "url", "summary", "steps", "impact", "cvss", "evidence")
+        for key in allowed:
+            if key in fields:
+                cols[key] = fields[key]
+        names = ", ".join(cols)
+        marks = ", ".join("?" for _ in cols)
+        cur = self.db.execute(f"INSERT INTO findings({names}) VALUES({marks})", tuple(cols.values()))
+        return cur.lastrowid
+
+    def set_finding(self, finding_id: int, **fields) -> None:
+        allowed = ("title", "kind", "severity", "status", "host", "url", "summary", "steps",
+                   "impact", "cvss", "evidence")
+        sets = {k: v for k, v in fields.items() if k in allowed}
+        if not sets:
+            return
+        clause = ", ".join(f"{k}=?" for k in sets) + ", updated=?"
+        self.db.execute(f"UPDATE findings SET {clause} WHERE id=?", (*sets.values(), now(), finding_id))
+
+    def findings(self, status: str | None = None) -> list[sqlite3.Row]:
+        if status:
+            return list(self.db.execute("SELECT * FROM findings WHERE status=? ORDER BY id", (status,)))
+        return list(self.db.execute("SELECT * FROM findings ORDER BY id"))
+
+    def finding(self, finding_id: int) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM findings WHERE id=?", (finding_id,)).fetchone()
