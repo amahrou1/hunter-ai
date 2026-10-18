@@ -142,6 +142,31 @@ Takeover candidates from recon get a second look in phase 03: kept only if the
 CNAME target no longer resolves or the provider shows its "nothing here"
 page; hosts serving a live page (including a password page) are cleared.
 
+## Notice and react (AI review)
+
+Tools are run by code; judgment is added on top:
+
+- Tripwires run on every result set: most hits sharing one status and length
+  (catch-all page), an address answering most ports (firewall), wildcard DNS
+  (a made-up name resolves), a wall of 403/429 answers (WAF / rate limit).
+  Clear-cut noise is filtered in code at once.
+- After each tool step (recon, port scan, probe, crawl, discovery) and on any
+  tripwire, an AI reviewer reads a compact observation and answers: can these
+  results be trusted, and what deserves a closer look? It replies with actions
+  from a fixed list (filter a noise signature, mark a catch-all host,
+  deprioritise, focus, add an endpoint or lead, follow up a lead, search a
+  site again, note). Code checks each action against the scope and the step's
+  own results before applying it; anything else is refused and logged. You
+  get a Discord message with what it noticed and what it did.
+- Lead follow-up: an AI examines content-confirmed leads read-only (GET/HEAD
+  only, through the guard): reads an API spec and adds its endpoints, checks
+  whether a .git is readable, says what a config file exposes. Secret values
+  are masked before anything is stored or sent.
+- Every AI session that can reach a host runs with the guard's network
+  settings, so whatever it sends is scope-checked, rate-limited and logged.
+  The AI can never widen scope or raise the rate. Settings `review.enabled`
+  and `review.follow_up` turn the parts off.
+
 ## Target folder
 
 | File | Required | Purpose |

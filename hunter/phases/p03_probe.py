@@ -89,6 +89,8 @@ class ProbePhase(Phase):
                                         mark=[h for h in hosts if h not in named])
         baselined = self._baselines(ctx, store)
         takeovers = self._takeovers(ctx, store)
+        if hosts:
+            self._review_probe(ctx, store)
         self._write_views(ctx, store)
         store.write_leads(ctx.target.output / "leads.txt")
         total = store.service_count()
@@ -179,6 +181,46 @@ class ProbePhase(Phase):
         if unverified:
             lines.append(f"Other open sensitive ports that did not identify themselves: {unverified} (leads.txt)")
         ctx.notify("Port scan done", "\n".join(lines), "warn" if verified else "info")
+        self._review_portscan(ctx, store, work, found, catch_all)
+
+    def _review_portscan(self, ctx, store, work, found, catch_all) -> None:
+        from ..review import Reviewer, top_groups
+        per_address = {a: len(p) for a, p in found.items()}
+        observation = {
+            "addresses_scanned": len(work.addresses), "ports_per_address": len(work.ports),
+            "addresses_with_open_ports": len(found),
+            "addresses_marked_catch_all_by_code": catch_all[:50],
+            "open_port_count_distribution": top_groups(per_address.values(), lambda n: n, 15),
+            "most_common_open_ports": top_groups([p for ps in found.values() for p in ps], lambda p: p, 20),
+            "addresses_sample": [{"address": a, "open_ports": p} for a, p in
+                                 sorted(found.items(), key=lambda kv: -len(kv[1]))[:40]],
+            "leads": [{"url": l["url"], "status": l["status"], "evidence": l["evidence"]}
+                      for l in store.leads() if l["kind"] == "exposed-service"][:40],
+        }
+        Reviewer(ctx).review("port scan", observation)
+
+    def _review_probe(self, ctx, store) -> None:
+        from ..review import Reviewer, same_response, top_groups
+        services = store.services()
+        trigger = same_response([{"status": s["status"], "length": s["content_length"]} for s in services],
+                                min_records=50, share=0.5)
+        groups = {}
+        for svc in services:
+            key = (svc["status"], svc["body_hash"] or "", (svc["title"] or "")[:60])
+            groups.setdefault(key, []).append(svc["url"])
+        repeated = sorted(groups.items(), key=lambda kv: -len(kv[1]))[:10]
+        observation = {
+            "live_services": len(services),
+            "status_counts": top_groups(services, lambda s: s["status"], 10),
+            "baseline_kinds": top_groups(services, lambda s: (json.loads(s["baseline"]).get("kind")
+                                                              if s["baseline"] else None), 8),
+            "same_page_groups": [{"status": k[0], "title": k[2], "count": len(v), "sample_urls": v[:5]}
+                                 for k, v in repeated if len(v) > 1],
+            "top_priority_services": [{"url": s["url"], "status": s["status"], "title": s["title"],
+                                       "server": s["server"], "tech": s["tech"], "priority": s["priority"]}
+                                      for s in services[:60]],
+        }
+        Reviewer(ctx).review("probe", observation, trigger)
 
     @staticmethod
     def _user_agent(scope) -> str:

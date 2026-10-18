@@ -5,4 +5,4 @@ AI agents (Claude Code in headless mode, pointed at GLM / DeepSeek / Claude)
 are only called for judgment work inside a phase.
 """
 
-__version__ = "0.6.2"
+__version__ = "0.7.0"

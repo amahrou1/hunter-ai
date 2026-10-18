@@ -61,6 +61,7 @@ class MapPhase(Phase):
         deadline = time.monotonic() + float(cfg["max_hours"]) * 3600
         gaps: list[str] = []
         crawled = blocked_out = 0
+        walled = False
         for batch in chunked(todo, int(cfg["batch"])):
             ctx.progress("crawling the sites", crawled, len(todo), "sites")
             if time.monotonic() > deadline:
@@ -74,10 +75,14 @@ class MapPhase(Phase):
                 store.mark_service(svc["id"], "crawled")
             crawled += len(batch)
             ctx.log(f"crawled {crawled}/{len(todo)} site(s); +{new} endpoint(s)")
+            if not walled:
+                walled = self._check_wall(ctx, store)
 
         total = store.endpoint_count()
         self._write_views(ctx, store)
         self._announce(ctx, store, crawled, total - before, blocked_out)
+        if crawled:
+            self._review(ctx, store, blocked_out)
         summary = f"{total} endpoint(s) known ({total - before} new) from {crawled} site(s) crawled"
         if blocked_out:
             summary += f"; {blocked_out} out-of-scope link(s) ignored"
@@ -130,6 +135,37 @@ class MapPhase(Phase):
                 if store.add_endpoint(str(form.get("method") or "GET"), action, "form", body=body):
                     new += 1
         return new, out
+
+    # -------------------------------------------------------------- review
+    def _check_wall(self, ctx: Context, store) -> bool:
+        from ..review import Reviewer, block_wall, recent_traffic
+        entries = recent_traffic(ctx.proxy().traffic_log)
+        trigger = block_wall(entries)
+        if not trigger:
+            return False
+        observation = {"recent_answers": [{"url": e.get("url"), "host": e.get("host"), "status": e.get("status")}
+                                          for e in entries[-60:]],
+                       "endpoints_so_far": store.endpoint_count()}
+        Reviewer(ctx).review("crawl (block wall)", observation, trigger)
+        return True
+
+    def _review(self, ctx: Context, store, out_of_scope: int) -> None:
+        from ..review import Reviewer, top_groups
+        rows = store.endpoints()
+        by_host = Counter(r["host"] for r in rows)
+        params = Counter(p for r in rows for p in json.loads(r["params"] or "[]"))
+        observation = {
+            "endpoints": len(rows), "out_of_scope_links_ignored": out_of_scope,
+            "endpoints_per_host": [{"host": h, "count": n} for h, n in by_host.most_common(25)],
+            "status_counts": top_groups(rows, lambda r: r["status"], 10),
+            "interesting_parameters": [{"name": n, "count": c} for n, c in params.most_common(40)
+                                       if n.lower() in INTERESTING_PARAMS],
+            "api_like": [r["url"] for r in rows if "/api" in r["url"].lower() or "graphql" in r["url"].lower()][:60],
+            "forms": [{"method": r["method"], "url": r["url"], "fields": r["body"]} for r in rows
+                      if r["source"] == "form"][:40],
+            "sample": [r["url"] for r in rows if not r["is_js"]][:80],
+        }
+        Reviewer(ctx).review("crawl", observation)
 
     # --------------------------------------------------------------- views
     def _write_views(self, ctx: Context, store) -> None:

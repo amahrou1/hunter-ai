@@ -96,9 +96,12 @@ def run_agent(*, settings: dict, secrets: dict[str, str], role: str, prompt: str
               timeout_minutes: float | None = None, add_dirs: Iterable[Path] = (),
               system_append: str | None = None, bare: bool | None = None,
               state=None, phase_id: str | None = None,
-              retries: int | None = None, retry_delay: float = 30.0) -> AgentResult:
+              retries: int | None = None, retry_delay: float = 30.0,
+              base_env: dict | None = None) -> AgentResult:
     choice = resolve(settings, role)
-    env = agent_env(choice, secrets)
+    # base_env: the scope-proxy environment when the session may reach a
+    # target, so whatever the AI sends is scope-checked and logged.
+    env = agent_env(choice, secrets, base=base_env)
     agent_cfg = settings["agent"]
     max_turns = int(max_turns or agent_cfg["max_turns"])
     timeout_s = float(timeout_minutes or agent_cfg["timeout_minutes"]) * 60

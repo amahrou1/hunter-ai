@@ -65,9 +65,11 @@ class ReconPhase(Phase):
         # 4. One enrichment note: subfinder already does recursive sources, so
         #    we do not brute force here. A dedicated brute-force wave can be a
         #    later owner task; recorded as a gap rather than silently skipped.
+        wildcards = self._wildcard_dns(ctx, store, roots)
         counts = store.host_counts()
         self._write_views(ctx, store)
         self._announce(ctx, counts, discovered, resolved, third_party, takeovers)
+        self._review(ctx, store, roots, wildcards)
 
         in_live = len(store.hosts(scope=A.IN, resolved=True))
         summary = (f"{counts.get(A.IN, 0)} in scope ({in_live} resolved), "
@@ -83,6 +85,57 @@ class ReconPhase(Phase):
         return PhaseResult(st.DONE if not gaps else st.PARTIAL, summary, gaps=gaps)
 
     # ------------------------------------------------------------- helpers
+    def _wildcard_dns(self, ctx: Context, store: A.Assets, roots: list[str]) -> dict[str, list[str]]:
+        """A made-up name under a wildcard root that still resolves means
+        wildcard DNS: hosts pointing only at those addresses are echoes of
+        it, not separate systems. They are kept (they are in scope) but
+        tested last."""
+        import secrets as _secrets
+        import socket
+        found: dict[str, list[str]] = {}
+        for root in roots:
+            probe = f"hunter-{_secrets.token_hex(6)}.{root}"
+            try:
+                addresses = sorted({info[4][0] for info in socket.getaddrinfo(probe, None)})
+            except (OSError, UnicodeError):
+                continue
+            if not addresses:
+                continue
+            found[root] = addresses
+            echoes = 0
+            for row in store.hosts(scope=A.IN, resolved=True):
+                host = row["host"]
+                if not (host == root or host.endswith("." + root)):
+                    continue
+                try:
+                    own = sorted(json.loads(row["addresses"] or "[]"))
+                except ValueError:
+                    continue
+                if own and set(own) <= set(addresses):
+                    store.set_host_note(host, wildcard_echo=root)
+                    store.set_priority(host, 10)
+                    echoes += 1
+            ctx.log(f"wildcard DNS on *.{root} ({', '.join(addresses[:3])}): {echoes} host(s) only point there")
+            ctx.state.event("wildcard_dns", self.id, f"{root} -> {addresses}")
+        return found
+
+    def _review(self, ctx: Context, store: A.Assets, roots: list[str], wildcards: dict) -> None:
+        from ..review import Reviewer, top_groups, wildcard_dns
+        resolved = {r["host"]: json.loads(r["addresses"] or "[]") for r in store.hosts(scope=A.IN, resolved=True)}
+        trigger = wildcard_dns(resolved) if not wildcards else None
+        observation = {
+            "wildcard_roots": roots,
+            "in_scope_hosts": store.host_counts().get(A.IN, 0),
+            "resolved_hosts": len(resolved),
+            "wildcard_dns_detected_by_code": wildcards,
+            "most_shared_addresses": top_groups(resolved.values(), lambda a: tuple(sorted(a))[:4], 8),
+            "third_party_sample": [{"host": r["host"], "reason": r["third_party_reason"]}
+                                   for r in store.hosts(scope=A.THIRD_PARTY)][:20],
+            "takeover_candidates": [{"host": r["host"], "cname": r["cname"]} for r in store.takeover_candidates()],
+            "host_sample": sorted(resolved)[:150],
+        }
+        Reviewer(ctx).review("recon", observation, trigger)
+
     def _seed_hosts(self, ctx: Context) -> list[str]:
         hosts = []
         for line in ctx.target.input_text("subdomains.txt").splitlines():

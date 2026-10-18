@@ -17,6 +17,7 @@ folders, configuration and backup files.
 from __future__ import annotations
 
 import json
+from collections import Counter
 import re
 import ssl
 import time
@@ -107,6 +108,11 @@ class DiscoverPhase(Phase):
         searched = hits = 0
         opener = self._opener(ctx)
         new_leads: list[str] = []
+        from ..review import Reviewer
+        self._reviewer = Reviewer(ctx)
+        self._auto_filters: list[str] = []
+        self._per_site: list[dict] = []
+        walled = False
         for svc in todo:
             ctx.progress("searching for hidden files and paths", searched, len(todo), "sites")
             if time.monotonic() > deadline:
@@ -123,7 +129,22 @@ class DiscoverPhase(Phase):
             searched += 1
             if searched % 25 == 0:
                 ctx.log(f"searched {searched}/{len(todo)} site(s); {hits} hit(s), {len(new_leads)} lead(s)")
+                if not walled:
+                    walled = self._check_wall(ctx)
 
+        if searched:
+            outcome = self._review(ctx, store)
+            # Sites the reviewer wants searched again (after a filter).
+            for url in outcome.redo_sites[:10]:
+                svc = next((s for s in store.services() if s["url"].rstrip("/") == url.rstrip("/")), None)
+                if svc is not None:
+                    found, leads = self._search(ctx, store, scope, binary, svc, wordlist, cfg, opener)
+                    hits += found
+                    new_leads += leads
+                    ctx.log(f"searched {url} again: {found} hit(s)")
+            self._reviewer.follow_up(outcome.investigate or None)
+            if outcome.investigate:
+                self._reviewer.follow_up()      # and the content-confirmed ones
         self._write_views(ctx, store)
         self._announce(ctx, store, searched, hits, new_leads)
         summary = f"{searched} site(s) searched, {hits} hit(s), {len(new_leads)} new lead(s) to validate"
@@ -142,14 +163,30 @@ class DiscoverPhase(Phase):
         baseline = json.loads(svc["baseline"]) if svc["baseline"] else {}
         sample = baseline.get("sample") if isinstance(baseline.get("sample"), dict) else {}
         noise = {(sample.get("status"), sample.get("len"))} if sample.get("status") else set()
+        reviewer = getattr(self, "_reviewer", None)
+        if reviewer is not None:
+            noise |= reviewer.filters(svc["host"])
+        records = [r for r in run.json_lines()
+                   if r.get("url") and scope.decide_url(str(r["url"])).allowed
+                   and (r.get("status"), r.get("length")) not in noise]
+        # Tripwire: most hits share one status and length -> a catch-all page
+        # that calibration missed. Clear-cut, so code filters it at once.
+        from ..review import same_response
+        trigger = same_response(records, min_records=25, share=0.6)
+        if trigger and reviewer is not None:
+            removed = reviewer.add_filter(svc["host"], trigger.data["status"], trigger.data["length"],
+                                          f"auto: {trigger.detail}")
+            noise.add((trigger.data["status"], trigger.data["length"]))
+            records = [r for r in records if (r.get("status"), r.get("length")) not in noise]
+            self._auto_filters.append(f"{svc['url']}: {trigger.detail} (filtered{', ' + str(removed) + ' removed' if removed else ''})")
+            ctx.log(f"{svc['url']}: {trigger.detail}; filtered")
+        if hasattr(self, "_per_site"):
+            self._per_site.append({"url": svc["url"], "hits": len(records),
+                                   "groups": Counter((r.get("status"), r.get("length")) for r in records).most_common(3)})
         found, leads = 0, []
-        for record in run.json_lines():
+        for record in records:
             url = str(record.get("url") or "")
             status, length = record.get("status"), record.get("length")
-            if not url or not scope.decide_url(url).allowed:
-                continue
-            if (status, length) in noise:
-                continue          # identical to this site's "not found" answer
             found += 1
             store.add_endpoint("GET", url, "discover", status=status,
                                content_type=record.get("content-type") or "", length=length)
@@ -158,6 +195,33 @@ class DiscoverPhase(Phase):
                 if lead:
                     leads.append(lead)
         return found, leads
+
+    def _check_wall(self, ctx) -> bool:
+        from ..review import block_wall, recent_traffic
+        entries = recent_traffic(ctx.proxy().traffic_log)
+        trigger = block_wall(entries)
+        if not trigger:
+            return False
+        observation = {"recent_answers": [{"url": e.get("url"), "host": e.get("host"), "status": e.get("status")}
+                                          for e in entries[-60:]]}
+        self._reviewer.review("discovery (block wall)", observation, trigger)
+        return True
+
+    def _review(self, ctx, store):
+        busiest = sorted(self._per_site, key=lambda x: -x["hits"])[:25]
+        rows = [r for r in store.endpoints() if r["source"] == "discover"]
+        observation = {
+            "sites_searched": len(self._per_site),
+            "hits_total": len(rows),
+            "auto_filters_applied": self._auto_filters[:30],
+            "busiest_sites": [{"url": b["url"], "hits": b["hits"],
+                               "top_status_length": [{"status": g[0][0], "length": g[0][1], "count": g[1]}
+                                                     for g in b["groups"]]} for b in busiest],
+            "hits_sample": [{"url": r["url"], "status": r["status"], "length": r["length"]} for r in rows[:120]],
+            "leads": [{"url": l["url"], "kind": l["kind"], "status": l["status"], "evidence": l["evidence"]}
+                      for l in store.leads()][:60],
+        }
+        return self._reviewer.review("discovery", observation)
 
     def _check(self, store, opener, url: str) -> str | None:
         path = url.split("?", 1)[0].lower()

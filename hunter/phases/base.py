@@ -148,6 +148,9 @@ class Context:
     def agent(self, role: str, prompt: str, name: str, **kwargs) -> AgentResult:
         assert self.phase_id
         workdir = kwargs.pop("workdir", None) or (self.phase_dir() / "work")
+        if "base_env" not in kwargs and self.target.scope_file.exists():
+            # Any request the AI makes to a host goes through the guard.
+            kwargs["base_env"] = self.proxy().env()
         notes = self.operator().notes_for_agents()
         if notes:
             extra = kwargs.pop("system_append", None)

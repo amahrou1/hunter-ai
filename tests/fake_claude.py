@@ -28,7 +28,8 @@ prompt = sys.stdin.read()
 record = os.environ.get("FAKE_CLAUDE_RECORD")
 if record:
     keys = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL", "DISABLE_AUTOUPDATER")
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL", "DISABLE_AUTOUPDATER",
+            "HTTPS_PROXY", "HUNTER_PROXY")
     with open(record, "a", encoding="utf-8") as handle:
         handle.write(json.dumps({"argv": argv, "prompt": prompt, "cwd": os.getcwd(),
                                  "env": {k: os.environ.get(k) for k in keys}}) + "\n")
@@ -53,6 +54,16 @@ if mode == "draft":
     if source != "NOFILE":
         with open(source, encoding="utf-8") as src, open("scope_draft.json", "w", encoding="utf-8") as dst:
             dst.write(src.read())
+    mode = "success"
+
+if mode == "files":
+    # FAKE_CLAUDE_FILES="review.json=/path/a.json;lead.json=/path/b.json":
+    # write each output the prompt asks for (named in the prompt) into cwd.
+    for pair in filter(None, os.environ.get("FAKE_CLAUDE_FILES", "").split(";")):
+        name, source = pair.split("=", 1)
+        if name in prompt:
+            with open(source, encoding="utf-8") as src, open(name, "w", encoding="utf-8") as dst:
+                dst.write(src.read())
     mode = "success"
 
 if mode == "success":

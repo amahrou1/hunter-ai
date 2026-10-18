@@ -64,6 +64,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Role -> "<profile>:<tier>". "active" means the active profile.
     "roles": {
         "triage": "active:fast",
+        "reviewer": "active:strong",
         "planner": "active:strong",
         "tester": "active:strong",
         "validator": "active:max",
