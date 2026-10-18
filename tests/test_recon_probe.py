@@ -118,7 +118,7 @@ class LocalTarget:
     """Serves a home page, a stable 404, and a gate path, so baselines can be
     classified. Records which paths were requested."""
 
-    def __init__(self):
+    def __init__(self, tls_dir=None):
         self.seen = []
         outer = self
 
@@ -141,6 +141,16 @@ class LocalTarget:
                 pass
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        if tls_dir is not None:
+            import ssl
+            import subprocess
+            cert, key = tls_dir / "cert.pem", tls_dir / "key.pem"
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                            "-subj", "/CN=127.0.0.1", "-keyout", str(key), "-out", str(cert)],
+                           check=True, capture_output=True)
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(cert, key)
+            self.server.socket = context.wrap_socket(self.server.socket, server_side=True)
         self.port = self.server.server_port
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -319,3 +329,46 @@ def test_probe_is_incremental_and_focus_first(recon_target, settings_secrets, no
     assert len([p for p in local.seen if "hunter-" in p]) == first_baselines + 2
     top = Assets(st.State(target.state_db).db).services()[0]
     assert top["host"] == "api.acme-test.io" and top["priority"] == 100
+
+
+def test_https_baseline_through_guard(recon_target, settings_secrets, notifier, tmp_path):
+    """HTTPS baselines go through the guard, which re-signs TLS. They must
+    reach the target (bol run: every HTTPS service came back 'unknown')."""
+    from hunter.phases import ProbePhase
+    target, _ = recon_target
+    local = LocalTarget(tls_dir=tmp_path)
+    try:
+        state = st.State(target.state_db)
+        store = Assets(state.db)
+        store.upsert_service("127.0.0.1", local.port, "https", url=f"https://127.0.0.1:{local.port}",
+                             baseline=json.dumps({"kind": "unknown"}))   # left by the old bug
+        state.close()
+        ctx = _ctx(target, settings_secrets[0], notifier)
+        ctx.phase_id = "03-probe"
+        try:
+            done = ProbePhase()._baselines(ctx, Assets(ctx.state.db))
+        finally:
+            ctx.close()
+            ctx.state.close()
+    finally:
+        local.close()
+    assert done == 1
+    svc = Assets(st.State(target.state_db).db).services()[0]
+    assert json.loads(svc["baseline"])["kind"] == "hard_404"
+    assert any("hunter-" in p for p in local.seen)
+
+
+def test_migration_after_finished_probe_marks_all_probed(tmp_path):
+    import sqlite3
+    db = sqlite3.connect(str(tmp_path / "s.db"), isolation_level=None)
+    db.row_factory = sqlite3.Row
+    st_schema = st.SCHEMA
+    db.executescript(st_schema)
+    db.execute("INSERT INTO phases(phase_id, name, status) VALUES('03-probe', 'probe', 'DONE')")
+    db.execute("CREATE TABLE hosts (host TEXT PRIMARY KEY, scope TEXT NOT NULL, source TEXT, resolved INTEGER "
+               "NOT NULL DEFAULT 0, addresses TEXT, cname TEXT, third_party_reason TEXT, takeover_candidate "
+               "INTEGER NOT NULL DEFAULT 0, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, notes TEXT)")
+    for host in ("live.a.test", "dead.a.test"):
+        db.execute("INSERT INTO hosts(host, scope, resolved, first_seen, last_seen) VALUES(?, ?, 1, 'x', 'x')",
+                   (host, A.IN))
+    assert Assets(db).unprobed_hosts() == []

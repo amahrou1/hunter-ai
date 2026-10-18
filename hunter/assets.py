@@ -116,6 +116,15 @@ class Assets:
             # Databases from before probe tracking: a host with a live service
             # was certainly probed already.
             self.db.execute("UPDATE hosts SET probed=1 WHERE host IN (SELECT host FROM services)")
+            # If probe already finished on the old layout, every resolved host
+            # it saw was probed: do not probe them all again.
+            try:
+                row = self.db.execute(
+                    "SELECT status FROM phases WHERE phase_id='03-probe'").fetchone()
+            except sqlite3.OperationalError:
+                row = None
+            if row is not None and row[0] in ("DONE", "PARTIAL"):
+                self.db.execute("UPDATE hosts SET probed=1 WHERE resolved=1")
 
     # hosts ----------------------------------------------------------------
     def add_host(self, host: str, scope: str, source: str) -> bool:

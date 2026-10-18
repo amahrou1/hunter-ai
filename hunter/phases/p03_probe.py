@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import ssl
 import urllib.error
 import urllib.request
 
@@ -31,7 +32,7 @@ INTERESTING = ("admin", "api", "dev", "staging", "test", "internal", "portal", "
 class ProbePhase(Phase):
     id = "03-probe"
     name = "Probe and fingerprint, per-host baselines"
-    version = "1.0"
+    version = "1.1"
     build_step = 4
     requires = ("00-intake", "02-recon")
 
@@ -132,12 +133,17 @@ class ProbePhase(Phase):
         catch-all that mimics real pages (soft 404)."""
         proxy = ctx.proxy()
         opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({"http": proxy.url, "https": proxy.url}))
+            urllib.request.ProxyHandler({"http": proxy.url, "https": proxy.url}),
+            # The guard re-signs HTTPS with its own CA; trust it, or every
+            # HTTPS baseline fails before it reaches the target.
+            urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=str(proxy.ca_bundle))))
         done = 0
         scope = ctx.scope()
         for svc in store.services():
-            if svc["baseline"] or not scope.host_in_scope(svc["host"]):
-                continue  # done earlier, or avoided since
+            if not scope.host_in_scope(svc["host"]):
+                continue  # avoided since
+            if svc["baseline"] and json.loads(svc["baseline"]).get("kind") != "unknown":
+                continue  # done earlier; "unknown" (all samples failed) is retried
             base = svc["url"].rstrip("/")
             samples = []
             for _ in range(2):
