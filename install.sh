@@ -39,11 +39,20 @@ if [ "${#missing[@]}" -gt 0 ]; then
 fi
 
 # --- 2. Python 3.10 or newer ---------------------------------------------
+# Ubuntu 22.04+ already has a new enough Python. On older systems (for
+# example Ubuntu 20.04) uv downloads a private Python 3.12 for hunter-ai
+# only; the system Python is not changed and no sudo is needed.
+export PATH="$HOME/.local/bin:$PATH"
+VENV="$REPO_DIR/.venv"
+
+py_ok() {
+  "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1
+}
+
 pick_python() {
   local candidate
   for candidate in python3.13 python3.12 python3.11 python3.10 python3; do
-    if command -v "$candidate" >/dev/null 2>&1 &&
-       "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+    if command -v "$candidate" >/dev/null 2>&1 && py_ok "$candidate"; then
       echo "$candidate"
       return 0
     fi
@@ -51,31 +60,43 @@ pick_python() {
   return 1
 }
 
-PY="$(pick_python || true)"
-if [ -z "$PY" ]; then
-  say "The system Python is too old. Installing Python 3.11."
-  sudo "${APT_ENV[@]}" apt-get install -y software-properties-common
-  sudo add-apt-repository -y ppa:deadsnakes/ppa
-  sudo "${APT_ENV[@]}" apt-get update -y
-  sudo "${APT_ENV[@]}" apt-get install -y python3.11 python3.11-venv
-  PY="python3.11"
+ensure_uv() {
+  if command -v uv >/dev/null 2>&1; then
+    return 0
+  fi
+  say "Installing uv (it provides a modern Python for hunter-ai only)"
+  if ! curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh; then
+    fail "uv could not be downloaded from astral.sh. Check the internet connection and run the installer again."
+  fi
+  command -v uv >/dev/null 2>&1 || fail "uv was installed but cannot be found in ~/.local/bin."
+}
+
+if [ -x "$VENV/bin/python" ] && ! py_ok "$VENV/bin/python"; then
+  rm -rf "$VENV"
 fi
 
-VENV="$REPO_DIR/.venv"
 if [ ! -x "$VENV/bin/python" ]; then
-  say "Creating the private Python environment"
-  if ! "$PY" -m venv "$VENV" >/dev/null 2>&1; then
-    PYVER="$("$PY" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
-    rm -rf "$VENV"
-    sudo "${APT_ENV[@]}" apt-get install -y "python${PYVER}-venv"
-    "$PY" -m venv "$VENV" || fail "Could not create the Python environment."
+  PY="$(pick_python || true)"
+  if [ -n "$PY" ] && [ "${HUNTER_FORCE_UV:-0}" != "1" ]; then
+    say "Creating the private Python environment ($("$PY" --version 2>&1))"
+    if ! "$PY" -m venv "$VENV" >/dev/null 2>&1; then
+      PYVER="$("$PY" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
+      rm -rf "$VENV"
+      sudo "${APT_ENV[@]}" apt-get install -y "python${PYVER}-venv"
+      "$PY" -m venv "$VENV" || fail "Could not create the Python environment."
+    fi
+  else
+    say "The system Python is older than 3.10. Setting up Python 3.12 for hunter-ai only."
+    ensure_uv
+    uv python install 3.12 || fail "Python 3.12 could not be downloaded."
+    uv venv --seed --python 3.12 "$VENV" || fail "Could not create the Python environment."
   fi
 fi
+py_ok "$VENV/bin/python" || fail "The Python environment in $VENV is not working."
 "$VENV/bin/python" -m pip install --quiet --upgrade pip
 "$VENV/bin/python" -m pip install --quiet -r "$REPO_DIR/requirements.txt"
 
 # --- 3. Claude Code (the agent runtime) ---------------------------------
-export PATH="$HOME/.local/bin:$PATH"
 if ! command -v claude >/dev/null 2>&1; then
   say "Installing Claude Code"
   if ! curl -fsSL https://claude.ai/install.sh | bash; then
