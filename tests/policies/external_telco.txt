@@ -1,0 +1,22 @@
+Telco Demo AG | About us | Careers | Press | Investor relations | www.telco-demo.com/en/about
+Follow us: twitter.com/telcodemo  linkedin.com/company/telcodemo
+
+Bug Bounty Program (private)
+We invite security researchers to report vulnerabilities. Reports go to bugbounty@telco-demo.de.
+
+Scope
+Domains                                   Critical / P1   High / P2   Medium / P3
+*.telco-demo.de                            3000 EUR        1000 EUR    300 EUR
+*.telco-cloud-demo.com
+auth.cloud.telco-demo.com
+❌ *.reverse.telco-cloud-demo.com
+❌ *.lab.internal.telco-demo.de
+
+Customer systems that are not owned by Telco Demo AG are not part of this program.
+Our US subsidiary runs its own program on Bugcrowd (telco-us-demo.com).
+
+Do's                                      Don'ts
+Stay within scope                          Do not limit availability
+Report immediately                         Do not access or modify data
+                                           No social engineering, no physical access
+Severity is rated with the Bugcrowd VRT or CVSS 4.0.

@@ -54,8 +54,13 @@ def _orch(target, settings_secrets, notifier, phases, **kw):
     return Orchestrator(target, settings, secrets, notifier=notifier, phases=phases, **kw)
 
 
-def test_default_pipeline_runs_and_is_honest(make_target, settings_secrets, notifier):
-    target = make_target()
+def test_default_pipeline_runs_and_is_honest(make_target, settings_secrets, notifier, monkeypatch):
+    from pathlib import Path
+    policies = Path(__file__).parent / "policies"
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "draft")
+    monkeypatch.setenv("FAKE_CLAUDE_DRAFTS", str(policies / "intigriti_acme.draft.json"))
+    settings_secrets[0]["researcher"]["handle"] = "amahrou1"
+    target = make_target(policy=(policies / "intigriti_acme.txt").read_text())
     assert _orch(target, settings_secrets, notifier, all_phases()).run() == EXIT_OK
     state = st.State(target.state_db)
     rows = {r["phase_id"]: r for r in state.phases()}
@@ -65,6 +70,7 @@ def test_default_pipeline_runs_and_is_honest(make_target, settings_secrets, noti
     assert manifest["policy.txt"]["present"] and not manifest["reports.txt"]["present"]
     assert (target.output / "run_summary.md").exists()
     assert notifier.titles()[0] == "Run started: acme"
+    assert "Scope ready" in notifier.titles()
     assert notifier.titles()[-1] == "Run finished: acme"
     assert notifier.sent[-1][2] == "warn"  # not-built phases are reported as gaps
 
@@ -150,7 +156,7 @@ def test_policy_change_resets_everything(make_target, settings_secrets, notifier
     (target.path / "policy.txt").write_text("A completely different program policy with a new scope list.")
     _orch(target, settings_secrets, notifier, phases).run()
     assert log == ["00-a", "00-a"]
-    assert "Policy changed" in notifier.titles()
+    assert "Scope inputs changed" in notifier.titles()
 
 
 def test_config_error_stops_run(make_target, settings_secrets, notifier):

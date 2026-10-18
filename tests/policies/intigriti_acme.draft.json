@@ -1,0 +1,24 @@
+{
+  "program_name": "Acme Corp Bug Bounty Program",
+  "platform": "intigriti",
+  "in_scope": [
+    {"asset": "*.acme-test.io", "type": "wildcard", "quote": "*.acme-test.io               Wildcard    Tier 2", "notes": ""},
+    {"asset": "acme-test.io", "type": "domain", "quote": "*.acme-test.io", "notes": "apex assumed"},
+    {"asset": "app.acme-test.com", "type": "domain", "quote": "app.acme-test.com            Web app     Tier 1", "notes": ""},
+    {"asset": "https://api.acme-test.com/v2", "type": "url", "quote": "https://api.acme-test.com/v2 API         Tier 1", "notes": ""},
+    {"asset": "com.acme.android", "type": "mobile", "quote": "com.acme.android             Android     Tier 3", "notes": ""}
+  ],
+  "out_of_scope": [
+    {"asset": "status.acme-test.io", "type": "domain", "quote": "status.acme-test.io          Third party (Statuspage)", "notes": ""},
+    {"asset": "*.staging.acme-test.io", "type": "wildcard", "quote": "*.staging.acme-test.io       Not production", "notes": ""}
+  ],
+  "excluded_vulnerabilities": ["Missing security headers", "Self-XSS", "Rate limiting on non-authentication endpoints"],
+  "forbidden_actions": ["denial of service", "social engineering", "physical attacks"],
+  "automated_scanning": "not_mentioned",
+  "rate_limit": {"requests_per_second": 10, "quote": "Do not exceed 10 requests per second."},
+  "required_headers": [{"name": "X-Intigriti-Username", "value": "<your username>", "quote": "Include the header X-Intigriti-Username: <your username> in every request."}],
+  "user_agent": null,
+  "account_rules": {"self_registration": "allowed", "email_requirement": "use your @intigriti.me email", "quote": "Register test accounts only with your @intigriti.me email address."},
+  "ambiguities": [],
+  "other_rules": []
+}

@@ -1,0 +1,14 @@
+ShopCo Public Bug Bounty | Bugcrowd
+Targets
+- www.shopco-demo.com
+- *.shopco-demo.net
+- 203.0.113.0/28 (store backend)
+
+Out of scope
+- blog.shopco-demo.com (hosted by a third party)
+- Any other shopco property not listed above
+
+Testing guidelines
+Please limit testing to 300 requests per minute. Automated scanners must be throttled and are only allowed against www.shopco-demo.com.
+Create accounts with your @bugcrowdninja.com address.
+Rewards follow the Bugcrowd Vulnerability Rating Taxonomy (https://bugcrowd.com/vulnerability-rating-taxonomy).

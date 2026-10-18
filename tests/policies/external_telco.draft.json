@@ -1,0 +1,24 @@
+{
+  "program_name": "Telco Demo AG Bug Bounty",
+  "platform": "external",
+  "in_scope": [
+    {"asset": "*.telco-demo.de", "type": "wildcard", "quote": "*.telco-demo.de", "notes": ""},
+    {"asset": "*.telco-cloud-demo.com", "type": "wildcard", "quote": "*.telco-cloud-demo.com", "notes": ""},
+    {"asset": "auth.cloud.telco-demo.com", "type": "domain", "quote": "auth.cloud.telco-demo.com", "notes": ""},
+    {"asset": "*.telco-demo.com", "type": "wildcard", "quote": "www.telco-demo.com", "notes": "company site"}
+  ],
+  "out_of_scope": [
+    {"asset": "*.reverse.telco-cloud-demo.com", "type": "wildcard", "quote": "❌ *.reverse.telco-cloud-demo.com", "notes": ""},
+    {"asset": "*.lab.internal.telco-demo.de", "type": "wildcard", "quote": "❌ *.lab.internal.telco-demo.de", "notes": ""},
+    {"asset": "customer systems not owned by Telco Demo AG", "type": "other", "quote": "Customer systems that are not owned by Telco Demo AG are not part of this program.", "notes": ""}
+  ],
+  "excluded_vulnerabilities": [],
+  "forbidden_actions": ["limiting availability", "accessing or modifying data", "social engineering", "physical access"],
+  "automated_scanning": "not_mentioned",
+  "rate_limit": {"requests_per_second": null, "quote": null},
+  "required_headers": [],
+  "user_agent": null,
+  "account_rules": {"self_registration": "not_mentioned", "email_requirement": null, "quote": null},
+  "ambiguities": [{"item": "reward tiers per domain", "why": "the table mixes scope and rewards"}],
+  "other_rules": ["Reports by email to bugbounty@telco-demo.de"]
+}

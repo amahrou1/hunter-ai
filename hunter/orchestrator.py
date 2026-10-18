@@ -31,7 +31,7 @@ from .config import ConfigError
 from .models import resolve
 from .notify import Notifier
 from .phases import Context, Phase, PhaseResult, all_phases
-from .target import Target
+from .target import SCOPE_INPUTS, Target
 
 EXIT_OK = 0
 EXIT_INVALID_TARGET = 2
@@ -108,6 +108,8 @@ class Orchestrator:
         finally:
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
+            if self.ctx is not None:
+                self.ctx.close()
             if self.state:
                 self.state.close()
             self._release_lock()
@@ -131,10 +133,11 @@ class Orchestrator:
         stored_raw = self.state.get_meta("input_fingerprints")
         if stored_raw:
             stored = json.loads(stored_raw)
-            if stored.get("policy.txt") != current.get("policy.txt"):
-                self._log("policy.txt changed since the last run: every phase will run again.")
-                self.notifier.send("Policy changed", "policy.txt is different from the last run. "
-                                   "All phases will run again under the new policy.", "warn",
+            changed_scope = [name for name in SCOPE_INPUTS if stored.get(name) != current.get(name)]
+            if changed_scope:
+                self._log(f"{', '.join(changed_scope)} changed since the last run: every phase will run again.")
+                self.notifier.send("Scope inputs changed", f"{', '.join(changed_scope)} changed since the last run. "
+                                   "All phases will run again under the new scope.", "warn",
                                    target=self.target.name)
                 for row in self.state.phases():
                     self.state.reset_phase(row["phase_id"], "policy changed", reset_attempts=True)
@@ -181,8 +184,23 @@ class Orchestrator:
                 continue
             self._run_phase(phase)
 
+    def _unmet_requirements(self, phase: Phase) -> list[str]:
+        assert self.state is not None
+        unmet = []
+        for required in getattr(phase, "requires", ()):
+            row = self.state.phase(required)
+            if row is None or row["status"] not in st.SETTLED:
+                unmet.append(required)
+        return unmet
+
     def _run_phase(self, phase: Phase) -> None:
         assert self.state is not None and self.ctx is not None
+        unmet = self._unmet_requirements(phase)
+        if unmet:
+            self.ran.add(phase.id)
+            self.state.finish_phase(phase.id, st.BLOCKED, f"waiting for {', '.join(unmet)}")
+            self._log(f"--- {phase.id}: skipped, waiting for {', '.join(unmet)}")
+            return
         self.ran.add(phase.id)
         self.ctx.phase_id = phase.id
         self.state.start_phase(phase.id, phase.version)
@@ -251,6 +269,14 @@ class Orchestrator:
             changed = {name for name in current if current[name] != baseline.get(name)}
             if changed:
                 self.state.set_meta("input_fingerprints", json.dumps(current, sort_keys=True))
+                if changed & set(SCOPE_INPUTS):
+                    self._log(f"{', '.join(sorted(changed))} changed: re-reading the scope and running again.")
+                    for row in self.state.phases():
+                        self.state.reset_phase(row["phase_id"], "scope inputs changed", reset_attempts=True)
+                    for blocker in self.state.open_blockers():
+                        self.state.close_blocker(blocker["id"], "RESOLVED")
+                    self.ran.clear()
+                    return True
                 if self._resolve_blockers_for(changed):
                     return True
                 baseline = current

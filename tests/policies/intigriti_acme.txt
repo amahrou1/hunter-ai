@@ -1,0 +1,27 @@
+Acme Corp Bug Bounty Program
+Intigriti | Tier 2 | Responsible disclosure
+
+Program description
+Acme builds project management software. We welcome reports on the assets below.
+
+In scope
+Domain                       Type        Tier
+*.acme-test.io               Wildcard    Tier 2
+app.acme-test.com            Web app     Tier 1
+https://api.acme-test.com/v2 API         Tier 1
+com.acme.android             Android     Tier 3
+
+Out of scope
+status.acme-test.io          Third party (Statuspage)
+*.staging.acme-test.io       Not production
+
+Rules of engagement
+- Do not exceed 10 requests per second.
+- Include the header X-Intigriti-Username: <your username> in every request.
+- Register test accounts only with your @intigriti.me email address.
+- No denial of service, no social engineering, no physical attacks.
+
+Not accepted
+- Missing security headers
+- Self-XSS
+- Rate limiting on non-authentication endpoints

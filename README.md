@@ -33,9 +33,31 @@ hunt start acme                    # runs in the background (tmux)
 hunt watch acme                    # live view; leave with Ctrl+b then d
 hunt status acme                   # phases, blockers, AI usage
 hunt stop acme                     # stop; `hunt start acme` resumes
+hunt scope acme                    # what was read as in scope / out / unclear
+hunt scope acme check <url>        # would this URL be allowed?
+hunt handle amahrou1               # your platform username (headers, emails)
 hunt models use deepseek           # switch provider (glm | deepseek | claude)
 hunt update                        # pull and reinstall
 ```
+
+## Scope guard
+
+Phase 00 has an AI read `policy.txt` into `scope_draft.json`; code then
+validates it, rejects any in-scope entry that the policy text does not
+actually name (no invented apex domains, no widened wildcards), lets
+out-of-scope entries win, applies `scope-overrides.txt`, and writes
+`hunt-output/scope.json` plus a readable `scope_review.md`.
+
+Every request to a target goes through a local mitmproxy (`hunter/proxy_addon.py`):
+out-of-scope HTTPS is refused at CONNECT (no TLS handshake), out-of-scope HTTP
+is answered locally with 403, allowed requests get the policy's required headers
+and a global rate limit, and everything is logged to `hunt-output/logs/traffic.jsonl`.
+Model APIs and the mailbox API bypass the guard (they are not targets).
+The guard proves itself at the end of intake and in `hunt doctor`.
+
+`scope-overrides.txt` lines: `in *.foo.com`, `out admin.foo.com`,
+`header X-Bug-Bounty: name`. Saving it during a run restarts the run with the
+new scope.
 
 ## Target folder
 
@@ -45,6 +67,7 @@ hunt update                        # pull and reinstall
 | test-credentials.txt | no | Accounts you created (free text) |
 | reports.txt | no | Your past reports (resolved / open) |
 | resolved-reports.txt | no | Disclosed reports from other researchers |
+| scope-overrides.txt | no | Your corrections: `in x`, `out y`, `header N: v` |
 | subdomains.txt, ips.txt | no | Seeds (never scope) |
 
 Output goes to `<target>/hunt-output/`: `state.db` (source of truth),

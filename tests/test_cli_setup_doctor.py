@@ -83,7 +83,12 @@ def test_cli_models_switch(env, capsys):
 
 
 def test_cli_run_and_status(env, make_target, capsys, monkeypatch):
-    make_target()
+    from pathlib import Path
+    policies = Path(__file__).parent / "policies"
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "draft")
+    monkeypatch.setenv("FAKE_CLAUDE_DRAFTS", str(policies / "intigriti_acme.draft.json"))
+    make_target(policy=(policies / "intigriti_acme.txt").read_text())
+    assert cli.main(["handle", "amahrou1"]) == 0
     config.save_secrets({"GLM_API_KEY": "glm-test-1234567"})  # no webhook -> notifier only logs
     assert cli.main(["run", "acme"]) == 0
     capsys.readouterr()
@@ -92,6 +97,12 @@ def test_cli_run_and_status(env, make_target, capsys, monkeypatch):
     assert "00-intake" in out and "DONE" in out and "NOT_BUILT" in out
     assert cli.main(["status"]) == 0
     assert "1/15 phases finished" in capsys.readouterr().out
+    assert cli.main(["scope", "acme", "check", "https://app.acme-test.com/x"]) == 0
+    assert "ALLOWED" in capsys.readouterr().out
+    assert cli.main(["scope", "acme", "check", "https://status.acme-test.io/"]) == 3
+    assert "BLOCKED" in capsys.readouterr().out
+    assert cli.main(["scope", "acme"]) == 0
+    assert "## In scope" in capsys.readouterr().out
 
 
 def test_cli_help_and_unknown(env, capsys):
@@ -137,3 +148,20 @@ def test_doctor_system_checks_run(env):
     doctor.check_system(report)
     names = [name for _, name, _ in report.results]
     assert "Claude Code" in names and "Python" in names
+
+
+def test_cli_handle(env, capsys):
+    assert cli.main(["handle"]) == 0
+    assert "(not set)" in capsys.readouterr().out
+    assert cli.main(["handle", "bad name"]) == 1
+    assert cli.main(["handle", "amahrou1"]) == 0
+    assert config.load_settings()["researcher"]["handle"] == "amahrou1"
+
+
+def test_doctor_proxy_check(env):
+    from hunter.proxy import mitmdump_bin
+    if mitmdump_bin() is None:
+        return
+    report = doctor.Report(lambda _l: None)
+    doctor.check_proxy(report, config.load_settings())
+    assert not report.failed, report.results

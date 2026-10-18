@@ -43,6 +43,18 @@ emit({"type": "system", "subtype": "init", "model": os.environ.get("ANTHROPIC_MO
 if mode == "barefail":
     mode = "noresult" if "--bare" in argv else "success"
 
+if mode == "draft":
+    # Policy reader stand-in: copy the next prepared draft into ./scope_draft.json.
+    drafts = os.environ["FAKE_CLAUDE_DRAFTS"].split(os.pathsep)
+    counter = os.environ["FAKE_CLAUDE_RECORD"] + ".n"
+    n = int(open(counter).read()) if os.path.exists(counter) else 0
+    open(counter, "w").write(str(n + 1))
+    source = drafts[min(n, len(drafts) - 1)]
+    if source != "NOFILE":
+        with open(source, encoding="utf-8") as src, open("scope_draft.json", "w", encoding="utf-8") as dst:
+            dst.write(src.read())
+    mode = "success"
+
 if mode == "success":
     emit({"type": "assistant", "message": {"content": [{"type": "text", "text": "READY"}]}})
     emit({"type": "result", "subtype": "success", "is_error": False, "result": "READY",

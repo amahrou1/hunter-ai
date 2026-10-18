@@ -1,0 +1,21 @@
+{
+  "program_name": "ShopCo Public Bug Bounty",
+  "platform": "bugcrowd",
+  "in_scope": [
+    {"asset": "www.shopco-demo.com", "type": "domain", "quote": "- www.shopco-demo.com", "notes": ""},
+    {"asset": "*.shopco-demo.net", "type": "wildcard", "quote": "- *.shopco-demo.net", "notes": ""},
+    {"asset": "203.0.113.0/28", "type": "cidr", "quote": "- 203.0.113.0/28 (store backend)", "notes": ""}
+  ],
+  "out_of_scope": [
+    {"asset": "blog.shopco-demo.com", "type": "domain", "quote": "- blog.shopco-demo.com (hosted by a third party)", "notes": ""}
+  ],
+  "excluded_vulnerabilities": [],
+  "forbidden_actions": [],
+  "automated_scanning": "limited",
+  "rate_limit": {"requests_per_second": 5, "quote": "Please limit testing to 300 requests per minute."},
+  "required_headers": [],
+  "user_agent": null,
+  "account_rules": {"self_registration": "allowed", "email_requirement": "@bugcrowdninja.com", "quote": "Create accounts with your @bugcrowdninja.com address."},
+  "ambiguities": [{"item": "Any other shopco property not listed above", "why": "generic exclusion"}],
+  "other_rules": ["Automated scanners only against www.shopco-demo.com"]
+}

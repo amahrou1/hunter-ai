@@ -15,9 +15,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+from .. import scope as sc
 from .. import state as st
 from ..agent import AgentResult, run_agent
 from ..notify import Notifier
+from ..proxy import ScopeProxy
 from ..target import Target
 
 
@@ -43,6 +45,31 @@ class Context:
         self.secrets = secrets
         self.notifier = notifier
         self.phase_id: str | None = None
+        self._proxy: ScopeProxy | None = None
+        self._scope: sc.Scope | None = None
+        self._scope_mtime = 0.0
+
+    # Scope and guard -------------------------------------------------------
+    def scope(self) -> sc.Scope:
+        """The scope written by the intake phase (re-read when it changes)."""
+        path = self.target.scope_file
+        mtime = path.stat().st_mtime
+        if self._scope is None or mtime != self._scope_mtime:
+            self._scope, self._scope_mtime = sc.load(path), mtime
+        return self._scope
+
+    def proxy(self) -> ScopeProxy:
+        """The running scope proxy. Every request to a target must go
+        through it: pass `proxy().env()` to tools and agents."""
+        if self._proxy is None or not self._proxy.running():
+            self._proxy = ScopeProxy(self.target.scope_file, self.target.logs, self.settings)
+            self._proxy.start()
+        return self._proxy
+
+    def close(self) -> None:
+        if self._proxy is not None:
+            self._proxy.stop()
+            self._proxy = None
 
     # Folders ---------------------------------------------------------------
     def phase_dir(self) -> Path:
@@ -97,6 +124,9 @@ class Phase:
     version: str = "1"
     # Build step of the plan in which the real implementation lands.
     build_step: int = 0
+    # Phases that must be DONE (or NOT_APPLICABLE) before this one may run.
+    # Every phase that touches a target requires 00-intake (scope + guard).
+    requires: tuple[str, ...] = ()
 
     def run(self, ctx: Context) -> PhaseResult:  # pragma: no cover - interface
         raise NotImplementedError

@@ -18,6 +18,7 @@ INPUT_FILES: dict[str, tuple[bool, str]] = {
     "test-credentials.txt": (False, "Accounts you created. Free text is fine, one account per line."),
     "reports.txt": (False, "Your past reports to this program, with status (resolved or open)."),
     "resolved-reports.txt": (False, "Published or disclosed reports from other researchers."),
+    "scope-overrides.txt": (False, "Your corrections to the scope: lines like 'in *.foo.com', 'out bar.foo.com'."),
     "subdomains.txt": (False, "Extra hostnames you already know. Seeds only, never scope."),
     "ips.txt": (False, "Extra IP addresses you already know. Seeds only, never scope."),
 }
@@ -41,7 +42,17 @@ TEMPLATES: dict[str, str] = {
         f"{TEMPLATE_MARK} Optional. Paste disclosed or resolved reports from other researchers, any format.\n"
         f"{TEMPLATE_MARK} If the program has none, leave this file empty or delete it.\n"
     ),
+    "scope-overrides.txt": (
+        f"{TEMPLATE_MARK} Optional. Your corrections to the scope the AI read from policy.txt. One per line:\n"
+        f"{TEMPLATE_MARK}   in *.extra.example.com       (add to scope)\n"
+        f"{TEMPLATE_MARK}   out admin.example.com        (never test)\n"
+        f"{TEMPLATE_MARK}   header X-Bug-Bounty: yourname (a header every request must carry)\n"
+        f"{TEMPLATE_MARK} Saving this file during a run makes the run re-read the scope.\n"
+    ),
 }
+
+# Inputs that define what may be touched: a change restarts the whole run.
+SCOPE_INPUTS = ("policy.txt", "scope-overrides.txt")
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -85,6 +96,14 @@ class Target:
     @property
     def logs(self) -> Path:
         return self.output / "logs"
+
+    @property
+    def scope_file(self) -> Path:
+        return self.output / "scope.json"
+
+    @property
+    def scope_review(self) -> Path:
+        return self.output / "scope_review.md"
 
     def input_path(self, name: str) -> Path:
         return self.path / name

@@ -32,6 +32,9 @@ For each program:
   hunt status [name]         what is done, what is blocked
   hunt logs <name>           follow the log (leave with Ctrl+c)
   hunt stop <name>           stop it; hunt start continues where it stopped
+  hunt scope <name>          what the AI read as in scope / out of scope / unclear
+  hunt scope <name> check <url>      would this URL be allowed?
+  hunt handle <username>     your platform username (for required headers and emails)
 
 Models:
   hunt models                show which model each task uses
@@ -263,6 +266,44 @@ def cmd_models(args) -> int:
     return 0
 
 
+def cmd_scope(args) -> int:
+    target = _load_target(args.target)
+    if not target.scope_file.exists():
+        _print(f"No scope yet for '{target.name}'. It is created by the first phase of: hunt start {target.name}")
+        return 1
+    from . import scope as sc
+    scope = sc.load(target.scope_file)
+    if args.action == "check":
+        if not args.value:
+            _print("Usage: hunt scope <target> check <url-or-host>")
+            return 1
+        decision = scope.decide_url(args.value)
+        verdict = "ALLOWED" if decision.allowed else "BLOCKED"
+        _print(f"{verdict}: {args.value} ({decision.reason}{': ' + decision.matched if decision.matched else ''})")
+        return 0 if decision.allowed else 3
+    _print(target.scope_review.read_text(encoding="utf-8") if target.scope_review.exists() else "(no review file)")
+    return 0
+
+
+def cmd_handle(args) -> int:
+    settings = config.load_settings()
+    if not args.name:
+        handle = settings["researcher"].get("handle") or "(not set)"
+        _print(f"Your bug bounty username: {handle}")
+        _print("Set it with: hunt handle <your-username>")
+        return 0
+    name = args.name.strip()
+    if not name or any(ch.isspace() for ch in name) or len(name) > 64:
+        _print("ERROR: give your username without spaces, for example: hunt handle amahrou1")
+        return 1
+    settings["researcher"]["handle"] = name
+    config.save_settings(settings)
+    _print(f"Saved. Your bug bounty username is now: {name}")
+    _print("It fills placeholders like 'X-Bug-Bounty: <username>' and builds emails like "
+           f"{name}@intigriti.me.")
+    return 0
+
+
 def cmd_update(_args) -> int:
     repo = paths.REPO_DIR
     _print("Downloading the newest version ...")
@@ -309,6 +350,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("action", nargs="?", choices=["show", "use", "role", "reset"], default="show")
     p.add_argument("values", nargs="*")
     p.set_defaults(func=cmd_models)
+    p = sub.add_parser("scope")
+    p.add_argument("target")
+    p.add_argument("action", nargs="?", choices=["show", "check"], default="show")
+    p.add_argument("value", nargs="?")
+    p.set_defaults(func=cmd_scope)
+    p = sub.add_parser("handle")
+    p.add_argument("name", nargs="?")
+    p.set_defaults(func=cmd_handle)
     sub.add_parser("update").set_defaults(func=cmd_update)
     sub.add_parser("reset-settings").set_defaults(func=cmd_reset_settings)
     sub.add_parser("version").set_defaults(func=cmd_version)

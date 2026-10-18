@@ -1,2 +1,3 @@
-# Python packages for hunter-ai. Build step 2 needs nothing beyond the
-# standard library. Later steps add the scope proxy and the browser here.
+# Python packages for hunter-ai (installed into ~/hunter-ai/.venv by install.sh).
+# mitmproxy runs the scope guard that blocks out-of-scope traffic.
+mitmproxy>=10

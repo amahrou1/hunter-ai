@@ -1,0 +1,9 @@
+{
+  "program_name": "ShopCo",
+  "platform": "bugcrowd",
+  "in_scope": [
+    {"asset": "www.shopco-demo.com", "type": "website", "quote": "www.shopco-demo.com"}
+  ],
+  "out_of_scope": [],
+  "automated_scanning": "sometimes"
+}

@@ -85,6 +85,28 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "max_phase_attempts": 3,
     },
     "notify": {"discord": True},
+    "scope": {
+        # Requests per second used when the policy does not state a limit.
+        "default_rps": 5,
+        # Never faster than this, whatever the policy allows (small VPS).
+        "max_rps": 20,
+        # When the policy only allows limited automation.
+        "limited_scanning_rps": 2,
+    },
+    "researcher": {
+        # Platform username, used to fill placeholders such as
+        # "X-Bug-Bounty: <username>" and to build platform emails.
+        "handle": "",
+    },
+    "proxy": {
+        "port": 0,  # 0 = pick a free port per run
+        "log_body_bytes": 4096,
+        # Infrastructure, never targets: reached directly, never scope-checked.
+        "passthrough": [
+            "api.z.ai", "open.bigmodel.cn", "api.deepseek.com", "api.anthropic.com",
+            "api.mail.tm", "mail.tm", "discord.com",
+        ],
+    },
     # Filled in by `hunt doctor`; never set by hand.
     "detected": {},
 }

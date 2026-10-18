@@ -41,6 +41,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("HUNTER_CLAUDE_BIN", str(fake))
     monkeypatch.setenv("FAKE_CLAUDE_RECORD", str(record))
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "success")
+    for name in ("NO_PROXY", "no_proxy", "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
+        monkeypatch.delenv(name, raising=False)
     # An inherited variable must never leak into an agent session.
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://evil.example")
     return {"config": config_dir, "targets": targets, "skills": skills, "record": record, "tmp": tmp_path}

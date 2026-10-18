@@ -116,6 +116,29 @@ def check_secrets(report: Report, settings: dict, secrets: dict[str, str],
         report.add(PASS if ok else FAIL, f"{label} key", message)
 
 
+def check_proxy(report: Report, settings: dict) -> None:
+    """Start the scope guard with a throw-away scope and prove that it
+    blocks out-of-scope traffic. Nothing leaves this server."""
+    from . import scope as sc
+    from .proxy import ProxyError, ScopeProxy, mitmdump_bin
+
+    if not mitmdump_bin():
+        report.add(FAIL, "Scope guard", "mitmproxy is not installed. Run: hunt update")
+        return
+    folder = paths.config_dir() / "doctor-proxy"
+    scope_file = folder / "scope.json"
+    sc.save(sc.Scope(in_scope=[sc.parse_asset("doctor-check.invalid")], rules={"effective_rps": 5}), scope_file)
+    proxy = ScopeProxy(scope_file, folder / "logs", settings)
+    try:
+        proxy.start()
+        ok, message = proxy.self_test()
+    except ProxyError as exc:
+        ok, message = False, str(exc)
+    finally:
+        proxy.stop()
+    report.add(PASS if ok else FAIL, "Scope guard", message)
+
+
 def check_agents(report: Report, settings: dict, secrets: dict[str, str]) -> None:
     """Run a real headless session. First try bare mode (recommended for
     scripts); if it does not work with this provider, fall back to normal
@@ -166,6 +189,9 @@ def run_doctor(out: Callable[[str], None] = print, quick: bool = False) -> int:
     out("")
     check_system(report)
     check_secrets(report, settings, secrets, send_test=not quick)
+    check_proxy(report, settings)
+    if not settings["researcher"].get("handle"):
+        report.add(WARN, "Username", "not set. Some programs require it in a header. Set it with: hunt handle <name>")
     if not quick and not report.failed:
         out("")
         out("Testing a real AI session (this takes up to a few minutes) ...")
