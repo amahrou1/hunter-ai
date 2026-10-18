@@ -186,3 +186,37 @@ def test_cli_reset_clears_stuck_phase(env, capsys):
     row = st.State(t.state_db).phase("02-recon")
     assert row["status"] == st.PENDING and row["attempts"] == 0
     assert "hunt start acme" in capsys.readouterr().out
+
+
+def test_cli_start_replaces_leftover_window(env, capsys, monkeypatch, tmp_path):
+    """A window left at the 'press Enter' prompt must not swallow the new run."""
+    import shutil
+    import subprocess
+    import time
+    import pytest
+    if not shutil.which("tmux"):
+        pytest.skip("tmux not installed")
+    marker = tmp_path / "ran.txt"
+    fake = tmp_path / "fake-hunt"
+    fake.write_text(f"#!/bin/sh\necho \"$@\" >> {marker}\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(cli, "HUNT", str(fake))
+    monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path))  # private tmux server
+    folder = env["targets"] / "acme"
+    folder.mkdir(parents=True)
+    (folder / "policy.txt").write_text("Acme bug bounty. In scope: *.acme.test. Out of scope: none. " * 3)
+    t = target_mod.Target(folder)
+    session = t.tmux_session()
+    # The leftover: a finished run sitting at its "press Enter" prompt.
+    subprocess.run(["tmux", "new-session", "-d", "-s", session, "bash", "-c", "read _"], check=True)
+    try:
+        assert cli.main(["start", "acme"]) == 0
+        for _ in range(50):
+            if marker.exists():
+                break
+            time.sleep(0.1)
+        assert marker.exists(), "the new run never started"
+        assert "run" in marker.read_text()
+        assert cli._tmux_has(session)  # fresh window still open for hunt watch
+    finally:
+        subprocess.run(["tmux", "kill-server"], capture_output=True)
