@@ -56,6 +56,18 @@ if mode == "draft":
             dst.write(src.read())
     mode = "success"
 
+if mode == "script":
+    # Simulate an agent's Bash tool: run the provided shell script in cwd with
+    # the inherited phase environment (proxy, HUNTER_*, PATH). Proves hk and the
+    # command checker work in the real environment.
+    import subprocess
+    script = os.environ.get("FAKE_CLAUDE_SCRIPT", "")
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    open("agent-stdout.txt", "w").write(proc.stdout + "\n--stderr--\n" + proc.stderr)
+    if not os.path.exists("handoff.md"):
+        open("handoff.md", "w").write("Automated recon done. See hk stats.\n")
+    mode = "success"
+
 if mode == "files":
     # FAKE_CLAUDE_FILES="review.json=/path/a.json;lead.json=/path/b.json":
     # write each output the prompt asks for (named in the prompt) into cwd.

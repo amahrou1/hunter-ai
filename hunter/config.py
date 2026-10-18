@@ -70,6 +70,19 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "validator": "active:max",
         "disprover": "active:max",
         "writer": "active:max",
+        # AI phase drivers: routine phases use the cheap flash tier, phases
+        # that need reasoning use the strong tier. Change any with:
+        # hunt models role <role> <profile:tier>.
+        "scanner": "active:fast",
+        "prober": "active:fast",
+        "mapper": "active:fast",
+        "discoverer": "active:fast",
+        "jsanalyst": "active:fast",
+        "misconfig": "active:fast",
+        "intel": "active:strong",
+        "accounts": "active:strong",
+        "authz": "active:strong",
+        "injection": "active:strong",
     },
     "agent": {
         "max_turns": 80,
@@ -119,6 +132,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "passthrough": [
             "api.z.ai", "open.bigmodel.cn", "api.deepseek.com", "api.anthropic.com",
             "api.mail.tm", "mail.tm", "discord.com",
+            # Passive data sources an AI phase may query directly (not targets):
+            # they bypass the scope proxy; real targets still go through it.
+            "crt.sh", "web.archive.org", "archive.org", "index.commoncrawl.org",
+            "otx.alienvault.com", "api.hackertarget.com", "rapiddns.io", "dns.bufferover.run",
+            "urlscan.io", "dns.google", "cloudflare-dns.com", "github.com", "api.github.com",
+            "raw.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org",
+            "services.nvd.nist.gov", "osv.dev", "api.osv.dev",
         ],
     },
     # Filled in by `hunt doctor`; never set by hand.
