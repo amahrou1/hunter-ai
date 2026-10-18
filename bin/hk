@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Entry point for the `hunt` command. Uses the private Python environment
+# that install.sh created next to the code.
+set -euo pipefail
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in /*) ;; *) SOURCE="$DIR/$SOURCE" ;; esac
+done
+REPO_DIR="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+PY="$REPO_DIR/.venv/bin/python"
+if [ ! -x "$PY" ]; then
+  echo "hunter-ai is not installed yet. Run: bash $REPO_DIR/install.sh" >&2
+  exit 1
+fi
+export PATH="$HOME/.local/bin:$PATH"
+# Load the code only from REPO_DIR, never from the current directory.
+exec "$PY" -c 'import sys; sys.path[0] = sys.argv.pop(1); from hunter.kit import main; raise SystemExit(main(sys.argv[1:]))' "$REPO_DIR" "$@"
