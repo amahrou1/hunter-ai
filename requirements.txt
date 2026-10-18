@@ -1,0 +1,2 @@
+# Python packages for hunter-ai. Build step 2 needs nothing beyond the
+# standard library. Later steps add the scope proxy and the browser here.
