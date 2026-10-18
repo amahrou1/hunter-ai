@@ -32,6 +32,7 @@ For each program:
   hunt status [name]         what is done, what is blocked
   hunt logs <name>           follow the log (leave with Ctrl+c)
   hunt stop <name>           stop it; hunt start continues where it stopped
+  hunt reset <name> [phase]  clear a stuck phase (e.g. 02-recon) so it runs again; no phase = all
   hunt scope <name>          what the AI read as in scope / out of scope / unclear
   hunt scope <name> check <url>      would this URL be allowed?
   hunt handle <username>     your platform username (for required headers and emails)
@@ -366,6 +367,34 @@ def cmd_update(_args) -> int:
     return subprocess.run(["bash", str(repo / "install.sh"), "--update"]).returncode
 
 
+def cmd_reset(args) -> int:
+    """Clear a stuck phase (or all phases) so the next `hunt start` runs it again.
+
+    Only phase status is cleared; the hosts and findings already stored stay.
+    """
+    target = _load_target(args.target)
+    if not target.state_db.exists():
+        _print(f"{target.name} has not run yet; nothing to reset.")
+        return 0
+    state = st.State(target.state_db)
+    try:
+        rows = state.phases()
+        known = {r["phase_id"] for r in rows}
+        if args.phase:
+            if args.phase not in known:
+                _print(f"No phase '{args.phase}' for {target.name}. Known: " + ", ".join(sorted(known)))
+                return 1
+            state.reset_phase(args.phase, "reset by hand", reset_attempts=True)
+            _print(f"{args.phase} cleared. Run: hunt start {target.name}")
+        else:
+            for row in rows:
+                state.reset_phase(row["phase_id"], "reset by hand", reset_attempts=True)
+            _print(f"All phases for {target.name} cleared. Run: hunt start {target.name}")
+    finally:
+        state.close()
+    return 0
+
+
 def cmd_reset_settings(_args) -> int:
     config.reset_settings()
     _print("Settings reset to the defaults. Your keys were not touched.")
@@ -418,6 +447,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("rate-cap")
     p.add_argument("value", nargs="?")
     p.set_defaults(func=cmd_rate_cap)
+    p = sub.add_parser("reset")
+    p.add_argument("target")
+    p.add_argument("phase", nargs="?", help="a phase id like 02-recon; omit to reset all phases")
+    p.set_defaults(func=cmd_reset)
     sub.add_parser("update").set_defaults(func=cmd_update)
     sub.add_parser("reset-settings").set_defaults(func=cmd_reset_settings)
     sub.add_parser("version").set_defaults(func=cmd_version)

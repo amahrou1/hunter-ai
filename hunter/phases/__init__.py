@@ -7,8 +7,6 @@ from .base import Context, Phase, PhaseResult, PlannedPhase
 from .p00_intake import IntakePhase
 from .p02_recon import ReconPhase
 from .p03_probe import ProbePhase
-from .p02_recon import ReconPhase
-from .p03_probe import ProbePhase
 
 
 def all_phases() -> list[Phase]:

@@ -184,7 +184,10 @@ class Orchestrator:
         assert self.state is not None and self.ctx is not None
         for phase in self.phases:
             row = self.state.phase(phase.id)
-            if row["status"] in st.SETTLED and row["version"] != phase.version:
+            # A new build may fix whatever made a phase settle or fail on the old
+            # code, so a version bump clears SETTLED and FAILED phases alike and
+            # gives them their attempts back.
+            if row["status"] in (*st.SETTLED, st.FAILED) and row["version"] != phase.version:
                 self.state.reset_phase(phase.id, f"code updated {row['version']} -> {phase.version}",
                                        reset_attempts=True)
                 row = self.state.phase(phase.id)

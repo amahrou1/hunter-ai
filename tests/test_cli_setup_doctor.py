@@ -167,3 +167,22 @@ def test_doctor_proxy_check(env):
     report = doctor.Report(lambda _l: None)
     doctor.check_proxy(report, config.load_settings())
     assert not report.failed, report.results
+
+
+def test_cli_reset_clears_stuck_phase(env, capsys):
+    from hunter import state as st
+    assert cli.main(["new", "acme"]) == 0
+    t = target_mod.Target(env["targets"] / "acme")
+    state = st.State(t.state_db)
+    for pid in ("00-intake", "02-recon"):
+        state.ensure_phase(pid, pid)
+    state.start_phase("02-recon", "1.0")
+    state.finish_phase("02-recon", st.FAILED, "FileNotFoundError")
+    state.db.execute("UPDATE phases SET attempts=3 WHERE phase_id='02-recon'")
+    state.close()
+
+    assert cli.main(["reset", "acme", "02-nope"]) == 1
+    assert cli.main(["reset", "acme", "02-recon"]) == 0
+    row = st.State(t.state_db).phase("02-recon")
+    assert row["status"] == st.PENDING and row["attempts"] == 0
+    assert "hunt start acme" in capsys.readouterr().out

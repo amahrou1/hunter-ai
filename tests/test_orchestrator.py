@@ -281,3 +281,19 @@ def test_dependent_blocks_if_required_output_gone(make_target, settings_secrets,
     assert code == EXIT_OK
     state = st.State(target.state_db)
     assert state.phase("02-recon")["status"] == st.BLOCKED
+
+
+def test_failed_phase_cleared_on_code_update(make_target, settings_secrets, notifier):
+    target = make_target()
+    for _ in range(4):  # exhaust attempts on version 1
+        _orch(target, settings_secrets, notifier, [Boom()]).run()
+    assert st.State(target.state_db).phase("03-boom")["attempts"] == 3
+    log = []
+
+    class Fixed(Recorder):
+        pass
+
+    fixed = Fixed("03-boom", version="2", log=log)
+    _orch(target, settings_secrets, notifier, [fixed]).run()
+    assert log == ["03-boom"]
+    assert st.State(target.state_db).phase("03-boom")["status"] == st.DONE
