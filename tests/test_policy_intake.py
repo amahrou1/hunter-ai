@@ -68,7 +68,9 @@ def test_bugcrowd_policy_limited_scanning(env):
     assert s.decide("pay.shopco-demo.net").allowed
     assert s.decide("203.0.113.5").allowed and not s.decide("203.0.113.20").allowed
     assert not s.decide("blog.shopco-demo.com").allowed
-    assert s.rules["low_automation"] and s.rules["effective_rps"] == 2   # 300/min, then limited scanning cap
+    # 300/min = 5/s is an explicit number, so it is honoured (not dropped to the
+    # limited-scanning floor), and automation counts as allowed.
+    assert s.rules["effective_rps"] == 5 and s.rules["low_automation"] is False
     assert s.rules["researcher_email"] == "amahrou1@bugcrowdninja.com"
 
 
@@ -173,3 +175,56 @@ def test_rule_questions_are_not_held_back_assets(env):
     assert policy.looks_like_asset("api.example.com (staging?)")
     assert not policy.looks_like_asset("Report submission channel")
     assert not policy.looks_like_asset("T Mobile US boundary: which telekom.com hosts belong to T-Mobile US")
+
+
+def test_explicit_rate_is_honored_not_clamped(env):
+    """A program that states a high rate (and cautious wording) must use the
+    stated rate, capped only by the hardware ceiling -- not dropped to 2/s."""
+    text = ("In scope: *.bol-demo.com\n"
+            "Automated tools and scanners are allowed up to 600 requests per second.\n"
+            "Please test carefully on production.\n")
+    draft = {
+        "program_name": "bol demo", "platform": "intigriti",
+        "in_scope": [{"asset": "*.bol-demo.com", "type": "wildcard", "quote": "In scope: *.bol-demo.com"}],
+        "out_of_scope": [], "excluded_vulnerabilities": [], "forbidden_actions": [],
+        "automated_scanning": "limited",   # the AI under-read it; the number must still win
+        "rate_limit": {"requests_per_second": 600, "quote": "up to 600 requests per second"},
+        "required_headers": [], "user_agent": None,
+        "account_rules": {"self_registration": "not_mentioned", "email_requirement": None, "quote": None},
+        "ambiguities": [], "other_rules": [],
+    }
+    settings = _settings("amahrou1")
+    s = policy.build_scope(draft, text, "", settings).scope
+    assert s.rules["policy_rps"] == 600
+    assert s.rules["effective_rps"] == 200           # hardware ceiling (default max_rps)
+    assert s.rules["rate_source"] == "policy"
+    assert s.rules["low_automation"] is False         # a stated number means automation is allowed
+
+    settings["scope"]["max_rps"] = 600
+    s2 = policy.build_scope(draft, text, "", settings).scope
+    assert s2.rules["effective_rps"] == 600           # raised ceiling: full policy rate
+
+
+def test_rate_override_wins(env):
+    text = "In scope: *.ex.com\nRate: 300 per second."
+    draft = {"program_name": "x", "platform": "external",
+             "in_scope": [{"asset": "*.ex.com", "type": "wildcard", "quote": "In scope: *.ex.com"}],
+             "out_of_scope": [], "automated_scanning": "allowed",
+             "rate_limit": {"requests_per_second": 300, "quote": "300 per second"},
+             "required_headers": [], "user_agent": None, "account_rules": {}, "ambiguities": [], "other_rules": []}
+    s = policy.build_scope(draft, text, "rate 50\n", _settings()).scope
+    assert s.rules["effective_rps"] == 50 and s.rules["rate_source"] == "your override"
+
+
+def test_forbidden_and_limited_without_number(env):
+    base = {"program_name": "x", "platform": "external",
+            "in_scope": [{"asset": "*.ex.com", "type": "wildcard", "quote": "*.ex.com"}],
+            "out_of_scope": [], "required_headers": [], "user_agent": None,
+            "account_rules": {}, "ambiguities": [], "other_rules": [],
+            "rate_limit": {"requests_per_second": None, "quote": None}}
+    forb = dict(base, automated_scanning="forbidden")
+    s = policy.build_scope(forb, "*.ex.com no automated scanning", "", _settings()).scope
+    assert s.rules["effective_rps"] == 1.0 and s.rules["low_automation"] is True
+    lim = dict(base, automated_scanning="limited")
+    s2 = policy.build_scope(lim, "*.ex.com limited scanning", "", _settings()).scope
+    assert s2.rules["effective_rps"] == 2 and s2.rules["low_automation"] is True

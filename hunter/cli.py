@@ -35,6 +35,7 @@ For each program:
   hunt scope <name>          what the AI read as in scope / out of scope / unclear
   hunt scope <name> check <url>      would this URL be allowed?
   hunt handle <username>     your platform username (for required headers and emails)
+  hunt rate-cap <n>          max requests/second this VPS will send (per-program limit still wins)
   hunt tools                 show which recon tools are installed
   hunt tools install         download the recon tools (subfinder, dnsx, httpx, ...)
 
@@ -326,6 +327,27 @@ def cmd_tools(args) -> int:
     return 0
 
 
+def cmd_rate_cap(args) -> int:
+    settings = config.load_settings()
+    if args.value is None:
+        _print(f"Hardware rate ceiling: {settings['scope']['max_rps']} requests/second")
+        _print("This caps every program, to protect run quality on this VPS.")
+        _print("Change it with: hunt rate-cap <number>")
+        return 0
+    try:
+        value = float(args.value)
+        if value <= 0:
+            raise ValueError
+    except ValueError:
+        _print("ERROR: give a positive number, e.g. hunt rate-cap 300")
+        return 1
+    settings["scope"]["max_rps"] = value
+    config.save_settings(settings)
+    _print(f"Hardware rate ceiling set to {value:g} requests/second.")
+    _print("A program's own limit still applies when it is lower.")
+    return 0
+
+
 def cmd_update(_args) -> int:
     repo = paths.REPO_DIR
     _print("Downloading the newest version ...")
@@ -385,6 +407,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pinned", action="store_true", help="use the tested versions, not the latest")
     p.add_argument("--force", action="store_true", help="reinstall even if present")
     p.set_defaults(func=cmd_tools)
+    p = sub.add_parser("rate-cap")
+    p.add_argument("value", nargs="?")
+    p.set_defaults(func=cmd_rate_cap)
     sub.add_parser("update").set_defaults(func=cmd_update)
     sub.add_parser("reset-settings").set_defaults(func=cmd_reset_settings)
     sub.add_parser("version").set_defaults(func=cmd_version)

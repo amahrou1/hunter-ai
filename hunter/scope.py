@@ -386,7 +386,7 @@ def parse_overrides(text: str) -> tuple[list[str], list[str], list[str]]:
     ins, outs, problems = [], [], []
     for number, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
-        if not line or line.startswith("#") or re.match(r"^header\s", line, re.I):
+        if not line or line.startswith("#") or re.match(r"^(header|rate)\s", line, re.I):
             continue
         match = re.match(r"^(in|out|\+|-)\s+(.+)$", line, re.I)
         if not match:
@@ -395,6 +395,17 @@ def parse_overrides(text: str) -> tuple[list[str], list[str], list[str]]:
         verb, value = match.group(1).lower(), match.group(2).strip()
         (ins if verb in ("in", "+") else outs).append(value)
     return ins, outs, problems
+
+
+def parse_override_rate(text: str) -> float | None:
+    """A line like `rate 120` in scope-overrides.txt sets the request rate
+    (requests per second). The last such line wins."""
+    value = None
+    for raw in text.splitlines():
+        match = re.match(r"^rate\s+([0-9]+(?:\.[0-9]+)?)\s*$", raw.strip(), re.I)
+        if match:
+            value = float(match.group(1))
+    return value
 
 
 def parse_override_headers(text: str) -> dict[str, str]:

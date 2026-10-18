@@ -89,7 +89,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         # Requests per second used when the policy does not state a limit.
         "default_rps": 5,
         # Never faster than this, whatever the policy allows (small VPS).
-        "max_rps": 20,
+        "max_rps": 200,
         # When the policy only allows limited automation.
         "limited_scanning_rps": 2,
     },

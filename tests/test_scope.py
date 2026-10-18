@@ -118,3 +118,12 @@ def test_mentioned_hosts():
 def test_overrides():
     ins, outs, problems = sc.parse_overrides("# note\nin *.a.com\nout b.a.com\n+ c.com\nbogus line\n")
     assert ins == ["*.a.com", "c.com"] and outs == ["b.a.com"] and len(problems) == 1
+
+
+def test_parse_override_rate():
+    assert sc.parse_override_rate("rate 120\n") == 120
+    assert sc.parse_override_rate("rate 2.5") == 2.5
+    assert sc.parse_override_rate("in *.a.com\nrate 10\nrate 30\n") == 30  # last wins
+    assert sc.parse_override_rate("in *.a.com") is None
+    ins, outs, _ = sc.parse_overrides("rate 50\nin *.a.com\nheader X: y\n")
+    assert ins == ["*.a.com"] and outs == []  # rate/header lines not treated as scope

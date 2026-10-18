@@ -46,6 +46,8 @@ Then write the file ./{draft_file} with exactly this structure:
   "excluded_vulnerabilities": ["vulnerability types the program says it does NOT accept"],
   "forbidden_actions": ["actions the program forbids, e.g. denial of service, social engineering, automated scanning, spam"],
   "automated_scanning": "allowed | limited | forbidden | not_mentioned",
+  // If the policy states a requests-per-second or per-minute limit, automation is
+  // allowed: use "allowed", not "limited".
   "rate_limit": {{"requests_per_second": number or null, "quote": "exact text or null"}},
   "required_headers": [{{"name": "header name", "value": "header value as written", "quote": "exact text"}}],
   "user_agent": "required User-Agent value, or null",
@@ -255,12 +257,30 @@ def build_scope(draft: dict, policy_text: str, overrides_text: str, settings: di
         policy_rps = None
     cfg = settings.get("scope", {})
     default_rps = float(cfg.get("default_rps", 5))
-    max_rps = float(cfg.get("max_rps", 20))
-    effective = min(float(policy_rps) if policy_rps else default_rps, max_rps)
-    if scan == "limited":
-        effective = min(effective, float(cfg.get("limited_scanning_rps", 2)))
-    if scan == "forbidden":
-        effective = min(effective, 1.0)
+    # A hardware ceiling: the most this VPS should push through one proxy,
+    # whatever the program allows. It protects the run quality, not the
+    # program. Set it with: hunt rate-cap <n>.
+    max_rps = float(cfg.get("max_rps", 200))
+
+    if policy_rps:
+        # The program stated an explicit number: honour it, capped only by
+        # the hardware ceiling. A stated numeric rate means automation is
+        # allowed, so "limited" does not drag it down to the slow floor.
+        effective = min(float(policy_rps), max_rps)
+        rate_source = "policy"
+        if float(policy_rps) > max_rps:
+            result.review.append(
+                f"The program allows {policy_rps:g}/s; capped to {max_rps:g}/s for this VPS. "
+                f"Raise it with: hunt rate-cap <n>.")
+    elif scan == "forbidden":
+        effective = 1.0
+        rate_source = "automation forbidden"
+    elif scan == "limited":
+        effective = float(cfg.get("limited_scanning_rps", 2))
+        rate_source = "limited automation, no number stated"
+    else:
+        effective = default_rps
+        rate_source = "no rate stated, default used"
 
     handle = str(settings.get("researcher", {}).get("handle") or "").strip()
     headers: dict[str, str] = {}
@@ -291,11 +311,23 @@ def build_scope(draft: dict, policy_text: str, overrides_text: str, settings: di
 
     accounts = draft.get("account_rules") if isinstance(draft.get("account_rules"), dict) else {}
     email_domain = PLATFORM_EMAIL_DOMAIN.get(platform)
+    # Apply an operator rate override (scope-overrides.txt: "rate 120"),
+    # still capped by the hardware ceiling.
+    override_rps = sc.parse_override_rate(overrides_text)
+    if override_rps is not None:
+        effective = min(override_rps, max_rps)
+        rate_source = "your override"
+        result.review.append(f"Override: request rate set to {effective:g}/s by you.")
+
     scope.rules = {
         "automated_scanning": scan,
-        "low_automation": scan in ("limited", "forbidden"),
+        # Automation is only genuinely limited when the program forbids it or
+        # caps it AND gave no workable number. A stated numeric rate means
+        # automation is allowed.
+        "low_automation": scan == "forbidden" or (scan == "limited" and not policy_rps),
         "policy_rps": policy_rps,
         "effective_rps": effective,
+        "rate_source": rate_source,
         "required_headers": headers,
         "unresolved_headers": unresolved,
         "self_registration": accounts.get("self_registration") if accounts.get("self_registration") in REGISTRATION
@@ -347,7 +379,7 @@ def render_review(scope: sc.Scope, build: BuildResult, target_name: str) -> str:
              f"- Program: {scope.program.get('name') or '(not named)'} ({scope.program.get('platform')})",
              f"- Automated scanning: {rules.get('automated_scanning')}",
              f"- Request rate used: {rules.get('effective_rps')} per second "
-             f"(policy: {rules.get('policy_rps') or 'not stated'})",
+             f"(policy: {rules.get('policy_rps') or 'not stated'}; source: {rules.get('rate_source', '-')})",
              f"- Required headers: {', '.join(f'{k}: {v}' for k, v in rules.get('required_headers', {}).items()) or 'none'}",
              f"- Self-registration: {rules.get('self_registration')}",
              f"- Researcher email: {rules.get('researcher_email') or rules.get('email_requirement') or 'not required'}",
