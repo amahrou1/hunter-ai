@@ -32,6 +32,9 @@ For each program:
   hunt status [name]         what is done, what is blocked
   hunt logs <name>           follow the log (leave with Ctrl+c)
   hunt stop <name>           stop it; hunt start continues where it stopped
+  hunt tell <name> "message"  steer a run, also while it runs: focus / add / avoid / skip, or any hint
+  hunt tell <name>           list your messages and what they changed
+  hunt chat <name>           talk to an AI about what the run found (it can pass on your instructions)
   hunt reset <name> [phase]  clear a stuck phase (e.g. 02-recon) so it runs again; no phase = all
   hunt scope <name>          what the AI read as in scope / out of scope / unclear
   hunt scope <name> check <url>      would this URL be allowed?
@@ -369,6 +372,126 @@ def cmd_update(_args) -> int:
     return subprocess.run(["bash", str(repo / "install.sh"), "--update"]).returncode
 
 
+def cmd_tell(args) -> int:
+    from .instructions import Operator
+    from .notify import Notifier
+    target = _load_target(args.target)
+    target.output.mkdir(parents=True, exist_ok=True)
+    state = st.State(target.state_db)
+    try:
+        operator = Operator(target, state)
+        text = " ".join(args.message).strip()
+        if not text:
+            return _tell_list(target, operator)
+        instruction = operator.submit(text)
+    finally:
+        state.close()
+    lines = instruction.lines()
+    _print(f"Saved as message #{instruction.id}.")
+    for line in lines:
+        _print("  " + line)
+    running = is_running(target)
+    _print("The AI sessions will also read your message as you wrote it.")
+    if running:
+        _print("The run picks it up before its next step. You will see it in: hunt watch " + target.name)
+    else:
+        _print(f"The run is not active; it uses this when you start it: hunt start {target.name}")
+    settings, secrets = config.load_settings(), config.load_secrets()
+    Notifier(secrets, settings["notify"].get("discord", True)).send(
+        f"Got your message #{instruction.id}", f"\"{text[:300]}\"\n" + "\n".join(lines), "info",
+        target=target.name)
+    return 0
+
+
+def _tell_list(target, operator) -> int:
+    messages = operator.all()
+    if not messages:
+        _print(f"No messages yet. Example: hunt tell {target.name} \"focus api.example.com\"")
+        _print(TELL_HELP)
+        return 0
+    for message in messages:
+        flag = "  (no longer shown to the AI)" if message.withdrawn else ""
+        _print(f"#{message.id}  {message.created[:16].replace('T', ' ')}  {message.text}{flag}")
+        for line in message.lines():
+            _print("      " + line)
+    _print()
+    _print("Focus:   " + (", ".join(operator.focus()) or "-"))
+    _print("Avoid:   " + (", ".join(operator.avoided()) or "-"))
+    _print("Skipped: " + (", ".join(sorted(operator.skipped())) or "-"))
+    return 0
+
+
+TELL_HELP = """
+Things it understands (plain English works too):
+  focus api.example.com        test it first in every later phase (also *.example.com)
+  add 10.1.2.3                 add a host or IP you found (scope-checked first)
+  avoid admin.example.com      never touch it; blocked even in the middle of the run
+  skip javascript              do not run a phase (by name or number, e.g. "skip phase 6")
+  unfocus / unavoid / unskip   undo
+  forget 3                     stop showing message #3 to the AI
+Anything else is passed to the AI sessions as a hint."""
+
+
+CHAT_PROMPT = """You are helping the operator of an autonomous bug bounty run (hunter-ai).
+Target: {name}. Target folder (your working directory): {path}
+
+The run itself is a separate background process. Your job in this chat is to
+answer the operator's questions about what the run has found and to pass
+their decisions to the run. Explain things in simple English; the operator
+is a bug bounty hunter but not a programmer.
+
+What you can read:
+- policy.txt and scope-overrides.txt: the program rules and the operator's scope corrections
+- hunt-output/scope_review.md: what is in scope, out of scope, unclear, and the request rate
+- hunt-output/run_summary.md and hunt-output/logs/run.log: progress and the live log
+- hunt-output/hosts_in_scope.txt, recon.json: hosts, third-party hosts, takeover candidates
+- hunt-output/services.txt, services.json: live web services, highest priority first
+- hunt-output/state.db: SQLite (tables phases, hosts, services, blockers, instructions).
+  There is no sqlite3 command; use: python3 -c "import sqlite3; ..."
+- Commands: hunt status {name}, hunt scope {name}, hunt scope {name} check <url>
+
+How to change what the run does (the only way):
+  hunt tell {name} "<instruction>"
+  e.g. hunt tell {name} "focus api.example.com", "add 10.1.2.3", "avoid admin.example.com",
+  "skip javascript", or any free-text hint for the testing agents. Run `hunt tell {name}`
+  with no message to list what was already said. Show the operator what you are about to
+  send, then send it; the command prints how it was understood.
+
+Hard rules:
+- Do NOT send any request to the target's hosts yourself (no curl, no browser, no tools
+  that touch the target). All testing goes through the run, which enforces scope and the
+  rate limit. Looking things up on the public web about the program or a technology is fine.
+- Do not edit files under hunt-output/ or the run's state. Do not stop or start the run
+  unless the operator asks (hunt stop {name} / hunt start {name}).
+- Never suggest testing anything that is out of scope or that the program rules forbid.
+"""
+
+
+def cmd_chat(args) -> int:
+    target = _load_target(args.target)
+    if not target.path.is_dir():
+        _print(f"No target folder {target.path}. Create it with: hunt new {target.name}")
+        return 1
+    settings, secrets = config.load_settings(), config.load_secrets()
+    try:
+        choice = models.resolve(settings, "tester")
+        env = models.agent_env(choice, secrets)
+    except config.ConfigError as exc:
+        _print(f"ERROR: {exc}")
+        return 1
+    claude = paths.claude_bin()
+    if not shutil.which(claude) and not Path(claude).exists():
+        _print("ERROR: Claude Code is not installed. Run the installer again.")
+        return 1
+    _print(f"Chat about '{target.name}' using {choice.label}. The run keeps going in the background.")
+    _print("Leave the chat with /exit (or Ctrl+c twice).")
+    prompt = CHAT_PROMPT.format(name=target.name, path=target.path)
+    os.chdir(target.path)
+    os.execvpe(claude, [claude, "--model", choice.model, "--dangerously-skip-permissions",
+                        "--append-system-prompt", prompt], env)
+    return 0
+
+
 def cmd_reset(args) -> int:
     """Clear a stuck phase (or all phases) so the next `hunt start` runs it again.
 
@@ -449,6 +572,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("rate-cap")
     p.add_argument("value", nargs="?")
     p.set_defaults(func=cmd_rate_cap)
+    p = sub.add_parser("tell")
+    p.add_argument("target")
+    p.add_argument("message", nargs=argparse.REMAINDER)
+    p.set_defaults(func=cmd_tell)
+    p = sub.add_parser("chat")
+    p.add_argument("target")
+    p.set_defaults(func=cmd_chat)
     p = sub.add_parser("reset")
     p.add_argument("target")
     p.add_argument("phase", nargs="?", help="a phase id like 02-recon; omit to reset all phases")

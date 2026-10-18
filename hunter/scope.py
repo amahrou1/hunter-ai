@@ -233,11 +233,18 @@ class Scope:
     questions: list[dict] = field(default_factory=list)     # unclear rules: information only
     unclassified_hosts: list[str] = field(default_factory=list)
     other_rules: list[str] = field(default_factory=list)
+    # Hosts the operator said never to touch (`hunt tell ... avoid x`). Read
+    # from avoid.json next to scope.json, never written into scope.json, so a
+    # fresh policy read cannot drop them.
+    operator_out: list[Asset] = field(default_factory=list)
 
     def decide(self, host: str, path: str = "/", port: int | None = None) -> Decision:
         host = normalize_host(host)
         if not host:
             return Decision(False, "no host")
+        for asset in self.operator_out:
+            if asset_matches(asset, host, path, port):
+                return Decision(False, "you told it to avoid this", asset.raw)
         for asset in self.out_of_scope:
             if asset_matches(asset, host, path, port):
                 return Decision(False, "out of scope", asset.raw)
@@ -260,7 +267,7 @@ class Scope:
         """True if any path of this host may be tested. Used to filter
         recon results (hosts, not full URLs)."""
         host = normalize_host(host)
-        for asset in self.out_of_scope:
+        for asset in (*self.operator_out, *self.out_of_scope):
             if asset.kind != "url" and asset_matches(asset, host):
                 return False
         return any(_host_matches(a, host) for a in self.in_scope if a.is_network)
@@ -317,8 +324,52 @@ class Scope:
         )
 
 
+AVOID_FILE = "avoid.json"
+
+
+def stamp(path: Path) -> tuple:
+    """Change marker for scope.json plus avoid.json: reload when it differs.
+    Raises OSError if scope.json itself is missing."""
+    main = path.stat().st_mtime_ns
+    try:
+        extra = (path.parent / AVOID_FILE).stat().st_mtime_ns
+    except OSError:
+        extra = 0
+    return (main, extra)
+
+
 def load(path: Path) -> Scope:
-    return Scope.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    scope = Scope.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    scope.operator_out = load_avoid(path.parent)
+    return scope
+
+
+def avoid_entries(folder: Path) -> list[str]:
+    """Raw entries of avoid.json (operator 'never touch' list)."""
+    path = folder / AVOID_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [str(x) for x in data if str(x).strip()] if isinstance(data, list) else []
+
+
+def load_avoid(folder: Path) -> list[Asset]:
+    out = []
+    for raw in avoid_entries(folder):
+        try:
+            out.append(parse_asset(raw))
+        except AssetError:
+            continue
+    return out
+
+
+def save_avoid(folder: Path, entries: list[str]) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / AVOID_FILE
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(sorted(set(entries)), indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
 
 
 def save(scope: Scope, path: Path) -> None:

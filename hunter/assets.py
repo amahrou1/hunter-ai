@@ -107,6 +107,15 @@ class Assets:
     def __init__(self, db: sqlite3.Connection):
         self.db = db
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(hosts)")}
+        if "probed" not in columns:
+            self.db.execute("ALTER TABLE hosts ADD COLUMN probed INTEGER NOT NULL DEFAULT 0")
+            # Databases from before probe tracking: a host with a live service
+            # was certainly probed already.
+            self.db.execute("UPDATE hosts SET probed=1 WHERE host IN (SELECT host FROM services)")
 
     # hosts ----------------------------------------------------------------
     def add_host(self, host: str, scope: str, source: str) -> bool:
@@ -156,6 +165,26 @@ class Assets:
     def host_counts(self) -> dict[str, int]:
         rows = self.db.execute("SELECT scope, COUNT(*) AS n FROM hosts GROUP BY scope")
         return {row["scope"]: row["n"] for row in rows}
+
+    def unprobed_hosts(self) -> list[str]:
+        return [r["host"] for r in self.db.execute(
+            "SELECT host FROM hosts WHERE scope=? AND resolved=1 AND probed=0 ORDER BY host", (IN,))]
+
+    def mark_probed(self, hosts, probed: bool = True) -> None:
+        self.db.executemany("UPDATE hosts SET probed=? WHERE host=?",
+                            [(int(probed), h.strip().lower()) for h in hosts])
+
+    def set_priority(self, pattern: str, priority: int) -> int:
+        """Set the priority of every service whose host matches `pattern`
+        (a host, or *.root for the root and all its subdomains)."""
+        pattern = pattern.strip().lower()
+        if pattern.startswith("*."):
+            root = pattern[2:]
+            cur = self.db.execute("UPDATE services SET priority=? WHERE host=? OR host LIKE ?",
+                                  (priority, root, "%." + root))
+        else:
+            cur = self.db.execute("UPDATE services SET priority=? WHERE host=?", (priority, pattern))
+        return cur.rowcount
 
     def takeover_candidates(self) -> list[sqlite3.Row]:
         return list(self.db.execute("SELECT * FROM hosts WHERE takeover_candidate=1 ORDER BY host"))

@@ -271,3 +271,51 @@ def test_probe_builds_services_and_baselines(recon_target, settings_secrets, not
     assert "/" in local.seen and any("hunter-" in p for p in local.seen)  # baseline probes happened
     assert (target.output / "services.txt").exists()
     assert "Probe done" in notifier.titles()
+
+
+def test_probe_is_incremental_and_focus_first(recon_target, settings_secrets, notifier, tmp_path):
+    """A second probe only touches hosts not probed yet (a resumed run or a
+    host added with hunt tell), keeps old baselines, and ranks focus hosts first."""
+    from hunter.instructions import Operator
+    from hunter.phases import ProbePhase
+    target, tools = recon_target
+    local = LocalTarget()
+    asked = tmp_path / "asked.txt"
+    httpx = (tools / "httpx").read_text().replace("PORT = 0", f"PORT = {local.port}").replace(
+        "    if not h: continue\n",
+        f"    if not h: continue\n    open('{asked}', 'a').write(h + '\\n')\n", 1)
+    (tools / "httpx").write_text(httpx)
+    (tools / "httpx").chmod(0o755)
+
+    def probe():
+        ctx = _ctx(target, settings_secrets[0], notifier)
+        ctx.phase_id = "03-probe"
+        try:
+            return ProbePhase().run(ctx)
+        finally:
+            ctx.close()
+            ctx.state.close()
+
+    try:
+        state = st.State(target.state_db)
+        store = Assets(state.db)
+        store.add_host("www.acme-test.io", A.IN, "seed")
+        store.set_resolution("www.acme-test.io", ["127.0.0.1"], "")
+        state.close()
+        assert probe().status == st.DONE
+        first_baselines = len([p for p in local.seen if "hunter-" in p])
+
+        state = st.State(target.state_db)
+        store = Assets(state.db)
+        store.add_host("api.acme-test.io", A.IN, "seed")
+        store.set_resolution("api.acme-test.io", ["127.0.0.1"], "")
+        Operator(target, state).submit("focus api.acme-test.io")
+        state.close()
+        assert probe().status == st.DONE
+    finally:
+        local.close()
+    assert asked.read_text().split() == ["www.acme-test.io", "api.acme-test.io"]
+    # Two baseline requests per service: only the new service got them.
+    assert len([p for p in local.seen if "hunter-" in p]) == first_baselines + 2
+    top = Assets(st.State(target.state_db).db).services()[0]
+    assert top["host"] == "api.acme-test.io" and top["priority"] == 100

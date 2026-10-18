@@ -55,7 +55,7 @@ class TokenBucket:
 class ScopeGuard:
     def __init__(self) -> None:
         self.scope: sc.Scope | None = None
-        self.scope_mtime = 0.0
+        self.scope_mtime: tuple = ()
         self.bucket: TokenBucket | None = None
         self.passthrough: set[str] = set()
         self.log_handle = None
@@ -133,7 +133,7 @@ class ScopeGuard:
         if not path:
             return self.scope
         try:
-            mtime = os.stat(path).st_mtime
+            mtime = sc.stamp(Path(path))
         except OSError:
             return self.scope
         if force or mtime != self.scope_mtime:

@@ -37,9 +37,14 @@ class ProbePhase(Phase):
 
     def run(self, ctx: Context) -> PhaseResult:
         store = ctx.assets()
-        hosts = [r["host"] for r in store.hosts(scope=A.IN, resolved=True)]
-        if not hosts:
+        all_hosts = [r["host"] for r in store.hosts(scope=A.IN, resolved=True)]
+        if not all_hosts:
             return PhaseResult(st.NOT_APPLICABLE, "no resolved in-scope hosts to probe")
+        # Only hosts not probed yet: a resumed or re-run probe continues where
+        # it stopped, and a host added with `hunt tell` is probed on its own.
+        scope = ctx.scope()
+        hosts = [h for h in store.unprobed_hosts() if scope.host_in_scope(h)]
+        self._operator = ctx.operator()
 
         binary = tool_path("httpx")
         if not binary:
@@ -48,15 +53,18 @@ class ProbePhase(Phase):
                       [])
             return PhaseResult(st.BLOCKED, "httpx not installed")
 
-        services = self._probe(ctx, store, binary, hosts)
+        ctx.log(f"{len(hosts)} host(s) to probe ({len(all_hosts) - len(hosts)} already done)")
+        new_services = self._probe(ctx, store, binary, hosts) if hosts else 0
         baselined = self._baselines(ctx, store)
         self._write_views(ctx, store)
-        self._announce(ctx, len(hosts), services, baselined)
+        total = store.service_count()
+        if hosts or baselined:
+            self._announce(ctx, len(hosts), new_services, baselined)
 
-        if services == 0:
-            return PhaseResult(st.PARTIAL, f"{len(hosts)} hosts probed, no live web service found")
-        return PhaseResult(st.DONE, f"{services} live web service(s) across {len(hosts)} host(s); "
-                           f"{baselined} baselined")
+        if total == 0:
+            return PhaseResult(st.PARTIAL, f"{len(all_hosts)} hosts probed, no live web service found")
+        return PhaseResult(st.DONE, f"{total} live web service(s) across {len(all_hosts)} host(s); "
+                           f"{new_services} found this time, {baselined} newly baselined")
 
     # ------------------------------------------------------------- probing
     def _probe(self, ctx: Context, store: A.Assets, binary, hosts: list[str]) -> int:
@@ -70,6 +78,7 @@ class ProbePhase(Phase):
         ], name="httpx-probe", timeout_s=3600, stdin_lines=hosts)
 
         count = 0
+        answered = set()
         for record in run.json_lines():
             url = record.get("url", "")
             host = str(record.get("input") or record.get("host") or "").split(":")[0].lower()
@@ -90,10 +99,18 @@ class ProbePhase(Phase):
                 else record.get("hash"),
                 priority=self._priority(host, record),
             )
+            answered.add(host)
             count += 1
+        # A host that answered was probed. If httpx finished normally, the
+        # silent ones were probed too (nothing live); if it was cut off, they
+        # are tried again next time.
+        store.mark_probed(hosts if run.ok else answered)
         return count
 
     def _priority(self, host: str, record: dict) -> int:
+        operator = getattr(self, "_operator", None)
+        if operator is not None and operator.is_focus(host):
+            return 100           # the operator asked for it
         score = 50
         label = host.split(".")[0]
         if any(token in host for token in INTERESTING):
@@ -117,7 +134,10 @@ class ProbePhase(Phase):
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({"http": proxy.url, "https": proxy.url}))
         done = 0
+        scope = ctx.scope()
         for svc in store.services():
+            if svc["baseline"] or not scope.host_in_scope(svc["host"]):
+                continue  # done earlier, or avoided since
             base = svc["url"].rstrip("/")
             samples = []
             for _ in range(2):

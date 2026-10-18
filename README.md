@@ -33,6 +33,10 @@ hunt start acme                    # runs in the background (tmux)
 hunt watch acme                    # live view; leave with Ctrl+b then d
 hunt status acme                   # phases, blockers, AI usage
 hunt stop acme                     # stop; `hunt start acme` resumes
+hunt tell acme "focus api.acme.com"   # steer the run, also while it runs
+hunt tell acme                     # list your messages and what they changed
+hunt chat acme                     # talk to an AI about what the run found
+hunt reset acme 02-recon           # clear a stuck phase so it runs again
 hunt scope acme                    # what was read as in scope / out / unclear
 hunt scope acme check <url>        # would this URL be allowed?
 hunt handle amahrou1               # your platform username (headers, emails)
@@ -59,6 +63,31 @@ The guard proves itself at the end of intake and in `hunt doctor`.
 `header X-Bug-Bounty: name`. Saving it during a run restarts the run with the
 new scope.
 
+## Steering a run (`hunt tell`, `hunt chat`)
+
+`hunt tell <target> "<message>"` works at any time, from any terminal, also
+while the run is going. Always put the message in double quotes. Clear
+actions are applied by code and the interpretation is printed back (and sent
+to Discord):
+
+| Say | Effect |
+|---|---|
+| `focus api.acme.com` / `*.acme.com` | tested first in every later phase |
+| `add 10.1.2.3` | added to the inventory (scope-checked; out of scope is refused) and probed |
+| `avoid admin.acme.com` | never touched; the scope guard blocks it immediately (`avoid.json`) |
+| `skip javascript` / `skip phase 6` | that phase does not run (intake, validation, disproof and report cannot be skipped) |
+| `unfocus` / `unavoid` / `unskip` | undo |
+| `forget 3` | message #3 is no longer shown to the AI |
+
+Plain English works too ("api.acme.com looks juicy, test it harder", "please
+add this IP 10.1.2.3", "don't touch admin.acme.com"). Every message, as
+written, is also added to the system prompt of every later AI session, so
+soft hints reach the testing agents. Nothing can widen the scope.
+
+`hunt chat <target>` opens an interactive Claude session (on the active model)
+in the target folder. It reads the run's results and passes your decisions on
+with `hunt tell`; it never sends requests to the target itself.
+
 ## Recon and probing
 
 `hunt tools install` downloads subfinder, dnsx, httpx, naabu, katana and ffuf
@@ -71,7 +100,8 @@ in scope, out of scope, or likely third-party (a CNAME to a SaaS/CDN that pays
 nothing, deprioritised). Dangling CNAMEs are flagged as subdomain-takeover
 candidates. Phase 03 (probe) finds live HTTP(S) services with httpx, records
 status/title/server/tech, and builds a per-host "soft 404" baseline so later
-fuzzing can tell real pages from catch-all responses. All target traffic goes
+fuzzing can tell real pages from catch-all responses. Probing is incremental:
+a resumed run, or a host added with `hunt tell`, only probes hosts not probed yet. All target traffic goes
 through the scope proxy. Output: `hosts_in_scope.txt`, `recon.json`,
 `services.txt`, `services.json`.
 

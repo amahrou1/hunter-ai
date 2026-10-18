@@ -194,3 +194,22 @@ def test_curl_through_proxy_with_bundle(proxy_env, tmp_path):
         assert blocked.stdout == "403"
     finally:
         target.close()
+
+
+def test_operator_avoid_is_enforced_live(proxy_env):
+    """`hunt tell ... avoid x` writes avoid.json; the running guard blocks x
+    at once, without restarting the run or rewriting scope.json."""
+    proxy, scope_file = proxy_env
+    target = Target()
+    try:
+        _opener(proxy).open(f"http://127.0.0.1:{target.port}/before", timeout=10).read()
+        sc.save_avoid(scope_file.parent, ["127.0.0.1"])
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _opener(proxy).open(f"http://127.0.0.1:{target.port}/after", timeout=10)
+        assert exc.value.code == 403
+        assert exc.value.headers["X-Hunter-Blocked"].startswith("you told it to avoid this")
+        sc.save_avoid(scope_file.parent, [])
+        _opener(proxy).open(f"http://127.0.0.1:{target.port}/again", timeout=10).read()
+        assert [p for p, _ in target.seen] == ["/before", "/again"]
+    finally:
+        target.close()

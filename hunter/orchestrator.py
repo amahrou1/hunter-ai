@@ -31,6 +31,7 @@ from .config import ConfigError
 from .models import resolve
 from .notify import Notifier
 from .phases import Context, Phase, PhaseResult, all_phases
+from .instructions import SKIPPED_SUMMARY, Operator
 from .target import SCOPE_INPUTS, Target
 
 EXIT_OK = 0
@@ -59,6 +60,7 @@ class Orchestrator:
         self.state: st.State | None = None
         self.ctx: Context | None = None
         self.ran: set[str] = set()
+        self._rerun_due = False
         self._lock_handle = None
 
     # ------------------------------------------------------------------ main
@@ -86,6 +88,10 @@ class Orchestrator:
             self._announce_start()
             while True:
                 self._pass()
+                self._operator_sync()
+                if self._rerun_due:
+                    self._rerun_due = False
+                    continue  # the operator asked for a phase to run again
                 open_blockers = self.state.open_blockers()
                 if not open_blockers or not self._wait_for_inputs(open_blockers):
                     break
@@ -183,7 +189,14 @@ class Orchestrator:
     def _pass(self) -> None:
         assert self.state is not None and self.ctx is not None
         for phase in self.phases:
+            self._operator_sync()
             row = self.state.phase(phase.id)
+            if phase.id in self._operator().skipped():
+                if row["status"] not in (*st.SETTLED, st.RUNNING):
+                    self.state.finish_phase(phase.id, st.NOT_APPLICABLE, SKIPPED_SUMMARY)
+                    self._log(f"--- {phase.id}: skipped on your instruction")
+                self.ran.add(phase.id)
+                continue
             # A new build may fix whatever made a phase settle or fail on the old
             # code, so a version bump clears SETTLED and FAILED phases alike and
             # gives them their attempts back.
@@ -199,6 +212,32 @@ class Orchestrator:
             if not self._should_run(phase, row):
                 continue
             self._run_phase(phase)
+
+    def _operator(self) -> Operator:
+        assert self.state is not None
+        return Operator(self.target, self.state)
+
+    def _operator_sync(self) -> bool:
+        """Pick up `hunt tell` messages: log new ones, apply actions that were
+        waiting, and queue phases the operator needs to run again (sets
+        _rerun_due, which the main loop clears). Returns True if a phase was
+        queued by this call."""
+        operator = self._operator()
+        for message in operator.unseen():
+            self._log(f"[you] #{message.id}: {message.text}")
+        for line in operator.apply_pending():
+            self._log(f"[you] {line}")
+        again = False
+        for phase_id in operator.pop_reruns():
+            if phase_id in operator.skipped():
+                continue
+            self.state.reset_phase(phase_id, "operator instruction", reset_attempts=True)
+            self.ran.discard(phase_id)
+            self._log(f"[you] {phase_id} will run again for your instruction")
+            again = True
+        if again:
+            self._rerun_due = True
+        return again
 
     def _unmet_requirements(self, phase: Phase) -> list[str]:
         assert self.state is not None
@@ -301,6 +340,10 @@ class Orchestrator:
         baseline = self.target.fingerprints()
         while self.clock() < deadline:
             self.sleep(min(poll, max(0.0, deadline - self.clock())))
+            self._operator_sync()
+            if self._rerun_due:
+                self._rerun_due = False
+                return True
             current = self.target.fingerprints()
             changed = {name for name in current if current[name] != baseline.get(name)}
             if changed:

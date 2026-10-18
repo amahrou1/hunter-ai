@@ -49,13 +49,13 @@ class Context:
         self.phase_id: str | None = None
         self._proxy: ScopeProxy | None = None
         self._scope: sc.Scope | None = None
-        self._scope_mtime = 0.0
+        self._scope_mtime: tuple = ()
 
     # Scope and guard -------------------------------------------------------
     def scope(self) -> sc.Scope:
         """The scope written by the intake phase (re-read when it changes)."""
         path = self.target.scope_file
-        mtime = path.stat().st_mtime
+        mtime = sc.stamp(path)
         if self._scope is None or mtime != self._scope_mtime:
             self._scope, self._scope_mtime = sc.load(path), mtime
         return self._scope
@@ -78,6 +78,11 @@ class Context:
         """Hosts and services for this run, in the same SQLite file as the
         run state."""
         return Assets(self.state.db)
+
+    def operator(self):
+        """The operator's `hunt tell` instructions (focus, avoid, notes)."""
+        from ..instructions import Operator
+        return Operator(self.target, self.state)
 
     # Tool runners ----------------------------------------------------------
     def passive_runner(self, mem_mb: int | None = None) -> ToolRunner:
@@ -137,6 +142,10 @@ class Context:
     def agent(self, role: str, prompt: str, name: str, **kwargs) -> AgentResult:
         assert self.phase_id
         workdir = kwargs.pop("workdir", None) or (self.phase_dir() / "work")
+        notes = self.operator().notes_for_agents()
+        if notes:
+            extra = kwargs.pop("system_append", None)
+            kwargs["system_append"] = notes + ("\n" + extra if extra else "")
         return run_agent(
             settings=self.settings, secrets=self.secrets, role=role, prompt=prompt,
             workdir=workdir, log_dir=self.target.logs / "agents" / self.phase_id,
