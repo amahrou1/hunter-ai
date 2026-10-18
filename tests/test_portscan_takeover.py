@@ -152,3 +152,81 @@ def test_probe_scans_ip_scope_and_probes_open_ports(env, make_target, settings_s
     assert [l["kind"] for l in store.leads()] == ["exposed-service"]
     assert "Port scan done" in notifier.titles()
     state.close()
+
+
+def test_accepts_everything_heuristic():
+    assert portscan.accepts_everything(list(range(43)), 61)       # bol 79.170.100.x pattern
+    assert not portscan.accepts_everything([22, 80, 443, 3306], 61)
+    assert not portscan.accepts_everything(list(range(10)), 12)   # few ports scanned: not enough signal
+
+
+def test_verify_silent_port_is_not_a_service():
+    """A port that accepts the connection but never answers (firewall) is
+    not reported as a service."""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(4)
+    threading.Thread(target=lambda: srv.accept()[0].close(), daemon=True).start()
+    try:
+        assert portscan._exchange("127.0.0.1", srv.getsockname()[1], b"PING\r\n", timeout=2) == b""
+    finally:
+        srv.close()
+
+
+def test_verify_checks_by_protocol(monkeypatch):
+    replies = {6379: b"+PONG\r\n", 9200: b'HTTP/1.0 200 OK\r\n\r\n{"cluster_name": "x"}', 2375: b"HTTP/1.0 404\r\n\r\n",
+               3306: b"\x4a\x00\x00\x00\x0a8.0.36\x00", 23: b"\xff\xfd\x18"}
+    monkeypatch.setattr(portscan, "_exchange", lambda a, port, payload, timeout=4.0: replies[port])
+    assert portscan.verify("10.0.0.1", 6379) == "Redis answers PING without a password"
+    assert portscan.verify("10.0.0.1", 9200) == "Elasticsearch cluster info returned"
+    assert portscan.verify("10.0.0.1", 2375) is None               # open, but not a Docker API
+    assert portscan.verify("10.0.0.1", 3306).startswith("MySQL greeting: 8.0.36")
+    assert portscan.verify("10.0.0.1", 23) == "Telnet banner"
+    assert portscan.verify("10.0.0.1", 445) is None                # no check: stays unverified
+
+
+def test_work_services_collapses_identical_pages(tmp_path):
+    import sqlite3
+    db = sqlite3.connect(str(tmp_path / "s.db"), isolation_level=None)
+    db.row_factory = sqlite3.Row
+    store = A.Assets(db)
+    for i in range(20):                                             # LB default page on 20 IP:ports
+        store.upsert_service(f"10.0.0.{i}", 8000 + i, "http", status=200, body_hash="same", priority=50)
+    store.upsert_service("app.acme.test", 443, "https", status=200, body_hash="unique", priority=50)
+    scope = sc.Scope(in_scope=[sc.parse_asset("10.0.0.0/24"), sc.parse_asset("*.acme.test")])
+    chosen = store.work_services(scope, "crawled")
+    assert len(chosen) == 3 and "app.acme.test" in {r["host"] for r in chosen}
+
+
+def test_catch_all_address_gives_no_leads(make_target, settings_secrets, notifier, monkeypatch):
+    """bol: 79.170.100.2 "had" Telnet, SMB, MS SQL, Oracle, Docker... open.
+    An address answering on most ports is a firewall: no leads, and web
+    services found on its other ports are dropped."""
+    from hunter.phases import ProbePhase
+    from hunter.phases.base import Context
+    target = make_target("ipcorp")
+    target.output.mkdir(parents=True, exist_ok=True)
+    sc.save(sc.Scope(in_scope=[sc.parse_asset("10.0.0.0/30")], rules={"effective_rps": 100}), target.scope_file)
+    everything = list(portscan.PORTS)
+    monkeypatch.setattr(portscan, "scan", lambda addrs, ports, rate, **kw: {
+        "10.0.0.1": [p for p in everything if p in ports],      # answers everything
+        "10.0.0.2": [443, 6379]})                                # a real host
+    monkeypatch.setattr(portscan, "verify", lambda a, p, ua="": "Redis answers PING without a password"
+                        if p == 6379 else None)
+    state = st.State(target.state_db)
+    store = A.Assets(state.db)
+    store.add_host("10.0.0.1", A.IN, "portscan")
+    store.upsert_service("10.0.0.1", 5432, "http", status=200)  # junk from an earlier scan
+    store.add_lead("exposed-service", "tcp://10.0.0.1:23", "03-probe", "port 23 open (Telnet)")
+    ctx = Context(target, state, settings_secrets[0], {"GLM_API_KEY": "k"}, notifier)
+    ctx.phase_id = "03-probe"
+    gaps = []
+    ProbePhase()._portscan(ctx, store, sc.load(target.scope_file), gaps)
+    leads = [(l["url"], l["status"]) for l in store.leads()]
+    assert leads == [("tcp://10.0.0.2:6379", "signature-match")]
+    assert store.host_note("10.0.0.1")["accepts_all"] is True
+    assert store.host_note("10.0.0.1")["open_ports"] == [443, 80, 8443, 8080]
+    assert not [s for s in store.services() if s["host"] == "10.0.0.1" and s["port"] == 5432]
+    message = notifier.sent[-1][1]
+    assert "accept a connection on every port" in message and "Redis answers PING" in message
+    state.close()

@@ -37,7 +37,7 @@ PROBE_GENERATION = "2"
 class ProbePhase(Phase):
     id = "03-probe"
     name = "Probe and fingerprint, per-host baselines"
-    version = "1.3"
+    version = "1.4"
     build_step = 4
     requires = ("00-intake", "02-recon")
 
@@ -113,7 +113,8 @@ class ProbePhase(Phase):
                              ports=[int(p) for p in cfg.get("ports") or []] or None)
         if not work.addresses:
             return
-        key = hashlib.sha256(json.dumps([work.addresses, work.ports]).encode()).hexdigest()[:16]
+        # "v2": answer-everything detection and protocol checks (v0.6.2).
+        key = hashlib.sha256(json.dumps(["v2", work.addresses, work.ports]).encode()).hexdigest()[:16]
         if ctx.state.get_meta("portscan_key") == key:
             return  # same addresses and ports as last time: already done
         for note in work.skipped + ([work.reduced] if work.reduced else []):
@@ -127,28 +128,66 @@ class ProbePhase(Phase):
         ctx.progress("port scan of the IP ranges", 0, total, "checks")
         found = portscan.scan(work.addresses, work.ports, rate,
                               on_progress=lambda n: ctx.progress("port scan of the IP ranges", n, total, "checks"))
-        exposed = []
+        # Leads from an earlier scan are rebuilt from this one.
+        store.db.execute("DELETE FROM leads WHERE kind='exposed-service' AND source='03-probe'")
+        user_agent = self._user_agent(scope)
+        verified, unverified, catch_all = [], 0, []
+        web_four = [p for p in (443, 80, 8443, 8080) if p in work.ports]
         for address, ports in found.items():
             store.add_host(address, A.IN, "portscan")
             store.set_resolution(address, [address])
             store.mark_probed([address], False)
-            store.set_host_note(address, open_ports=ports)
+            if portscan.accepts_everything(ports, len(work.ports)):
+                # A firewall or load balancer that completes the handshake on
+                # every port: the open ports say nothing. Keep the usual web
+                # ports for probing, drop services found on the others.
+                catch_all.append(address)
+                keep = [p for p in web_four if p in ports]
+                store.set_host_note(address, open_ports=keep, accepts_all=True, ports_answering=len(ports))
+                marks = ",".join("?" for _ in keep) or "NULL"
+                store.db.execute(f"DELETE FROM services WHERE host=? AND port NOT IN ({marks})", (address, *keep))
+                continue
+            store.set_host_note(address, open_ports=ports, accepts_all=False)
             for port in ports:
                 label = portscan.SENSITIVE_PORTS.get(port)
-                if label and store.add_lead("exposed-service", f"tcp://{address}:{port}", "03-probe",
-                                            f"port {port} open ({label}) on the internet"):
-                    exposed.append(f"{address}:{port} {label}")
+                if not label:
+                    continue
+                evidence = portscan.verify(address, port, user_agent)
+                url = f"tcp://{address}:{port}"
+                if evidence:
+                    if store.add_lead("exposed-service", url, "03-probe", f"{label}: {evidence}",
+                                      status="signature-match"):
+                        verified.append(f"{address}:{port} {label} - {evidence}")
+                elif store.add_lead("exposed-service", url, "03-probe",
+                                    f"port {port} open ({label}); the service did not identify itself"):
+                    unverified += 1
         ctx.state.set_meta("portscan_key", key)
-        open_count = sum(len(p) for p in found.values())
-        ctx.log(f"port scan: {open_count} open port(s) on {len(found)} address(es)")
+        real = {a: p for a, p in found.items() if a not in catch_all}
+        open_count = sum(len(p) for p in real.values())
+        ctx.log(f"port scan: {open_count} open port(s) on {len(real)} address(es); "
+                f"{len(catch_all)} address(es) answer on every port")
         lines = [f"Addresses scanned: {len(work.addresses)} (ports each: {len(work.ports)})",
-                 f"Open ports: {open_count} on {len(found)} address(es)"]
+                 f"Open ports: {open_count} on {len(real)} address(es)"]
+        if catch_all:
+            lines.append(f"{len(catch_all)} address(es) accept a connection on every port (firewall or load "
+                         "balancer): their ports are not counted, only the usual web ports are probed")
         if work.reduced:
             lines.append(work.reduced)
-        if exposed:
-            lines.append("Exposed services worth a look (NOT yet validated):")
-            lines += [f"- {e}" for e in exposed[:10]]
-        ctx.notify("Port scan done", "\n".join(lines), "warn" if exposed else "info")
+        if verified:
+            lines.append("Services that answered their own protocol (NOT yet validated):")
+            lines += [f"- {e}" for e in verified[:10]]
+        if unverified:
+            lines.append(f"Other open sensitive ports that did not identify themselves: {unverified} (leads.txt)")
+        ctx.notify("Port scan done", "\n".join(lines), "warn" if verified else "info")
+
+    @staticmethod
+    def _user_agent(scope) -> str:
+        browser = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/129.0.0.0 Safari/537.36")
+        tag = next((v for k, v in scope.required_headers.items() if k.lower() == "user-agent"), "")
+        if not tag:
+            return browser
+        return tag if scope.rules.get("user_agent_mode") == "exact" else f"{browser} {tag}"
 
     # ------------------------------------------------------------ takeover
     def _takeovers(self, ctx: Context, store: A.Assets) -> str:

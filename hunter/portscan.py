@@ -137,3 +137,80 @@ def scan(addresses: list[str], ports: list[int], rate: float, *, timeout: float 
     targets = [(a, p) for p in ports for a in addresses]
     asyncio.run(_scan(targets, rate, timeout, concurrency, record, on_progress))
     return {a: sorted(p) for a, p in found.items()}
+
+
+# --------------------------------------------------------------------------
+# Telling real services from "everything is open"
+# --------------------------------------------------------------------------
+
+# Many firewalls, load balancers and DDoS shields complete the TCP handshake on
+# every port, whatever is behind them. A connect scan alone cannot tell, so an
+# address that "has" most ports open is treated as answering everything.
+ACCEPTS_ALL_MIN_PORTS = 15
+ACCEPTS_ALL_RATIO = 0.4
+
+
+def accepts_everything(open_ports: list[int], scanned: int) -> bool:
+    return len(open_ports) >= ACCEPTS_ALL_MIN_PORTS and len(open_ports) >= ACCEPTS_ALL_RATIO * scanned
+
+
+def _exchange(address: str, port: int, payload: bytes | None, timeout: float = 4.0) -> bytes:
+    import socket
+    with socket.create_connection((address, port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        if payload:
+            sock.sendall(payload)
+        chunks, size = [], 0
+        while size < 4096:
+            try:
+                data = sock.recv(4096)
+            except OSError:
+                break
+            if not data:
+                break
+            chunks.append(data)
+            size += len(data)
+            if payload and size:
+                break
+        return b"".join(chunks)
+
+
+def _http(address: str, path: str, user_agent: str) -> bytes:
+    return (f"GET {path} HTTP/1.0\r\nHost: {address}\r\nUser-Agent: {user_agent}\r\n"
+            "Accept: */*\r\nConnection: close\r\n\r\n").encode()
+
+
+def verify(address: str, port: int, user_agent: str = "Mozilla/5.0") -> str | None:
+    """One harmless protocol exchange that only the real service answers
+    correctly. Returns evidence, or None if the service did not identify
+    itself (or there is no check for this port). Never logs in, never reads
+    data."""
+    checks = {
+        6379: (b"PING\r\n", lambda r: "Redis answers PING without a password" if r.startswith(b"+PONG")
+               else "Redis is reachable (asks for a password)" if b"NOAUTH" in r or b"-DENIED" in r else None),
+        11211: (b"version\r\n", lambda r: "Memcached answers: " + r[:40].decode("ascii", "replace").strip()
+                if r.startswith(b"VERSION") else None),
+        9200: (_http(address, "/", user_agent), lambda r: "Elasticsearch cluster info returned"
+               if b'"cluster_name"' in r or b"You Know, for Search" in r else None),
+        2375: (_http(address, "/version", user_agent), lambda r: "Docker API answers /version"
+               if b'"ApiVersion"' in r else None),
+        8500: (_http(address, "/v1/agent/self", user_agent), lambda r: "Consul agent API answers"
+               if b'"Config"' in r or b'"Member"' in r else None),
+        5984: (_http(address, "/", user_agent), lambda r: "CouchDB answers" if b'"couchdb"' in r.lower() else None),
+        3306: (None, lambda r: "MySQL greeting: " + _printable(r[5:40]) if len(r) > 5 and r[4] in (9, 10)
+               else None),
+        23: (None, lambda r: "Telnet banner" + (": " + _printable(r) if _printable(r) else "")
+             if r[:1] == b"\xff" or b"login" in r.lower() else None),
+    }
+    if port not in checks:
+        return None
+    payload, test = checks[port]
+    try:
+        reply = _exchange(address, port, payload)
+    except OSError:
+        return None
+    return test(reply) if reply else None
+
+
+def _printable(data: bytes) -> str:
+    return "".join(chr(b) for b in data if 32 <= b < 127).strip()[:60]

@@ -107,6 +107,10 @@ TAKEOVER_FINGERPRINTS = (
 )
 
 
+# How many services serving the exact same page are crawled / fuzzed.
+MAX_SAME_PAGE = 2
+
+
 def endpoint_template(url: str) -> tuple[str, str, list[str]]:
     """(template, host, parameter names) for deduplication: same scheme,
     host, port and path, and the same set of query parameter names."""
@@ -285,6 +289,7 @@ class Assets:
         rows = list(self.db.execute(
             f"SELECT * FROM services WHERE {column}=0 AND priority>0 ORDER BY priority DESC, host, port"))
         chosen, seen = [], set()
+        same_page: dict[tuple, int] = {}
         all_rows = list(self.db.execute("SELECT host, port, scheme FROM services"))
         https_hosts = {r["host"] for r in all_rows if r["scheme"] == "https"}
         for row in rows:
@@ -301,6 +306,13 @@ class Assets:
             key = (row["host"], row["port"])
             if key in seen:
                 continue
+            # The same page on many hosts or ports (a load balancer's default
+            # page, a parked domain): crawling two copies is enough.
+            if row["body_hash"]:
+                page = (row["status"], row["body_hash"])
+                same_page[page] = same_page.get(page, 0) + 1
+                if same_page[page] > MAX_SAME_PAGE:
+                    continue
             seen.add(key)
             chosen.append(row)
         return chosen
