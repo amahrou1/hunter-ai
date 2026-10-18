@@ -62,6 +62,7 @@ class MapPhase(Phase):
         gaps: list[str] = []
         crawled = blocked_out = 0
         for batch in chunked(todo, int(cfg["batch"])):
+            ctx.progress("crawling the sites", crawled, len(todo), "sites")
             if time.monotonic() > deadline:
                 left = len(todo) - crawled
                 gaps.append(f"crawl time budget ({cfg['max_hours']} h) used up; {left} site(s) not crawled "

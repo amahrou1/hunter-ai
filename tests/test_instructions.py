@@ -241,3 +241,23 @@ def test_cli_chat_launches_claude_in_target(make_target, monkeypatch, tmp_path, 
     prompt = seen["argv"][seen["argv"].index("--append-system-prompt") + 1]
     assert "hunt tell acme" in prompt and "Do NOT send any request" in prompt
     assert "-p" not in seen["argv"]  # interactive, not headless
+
+
+def test_status_shows_progress_and_time_left(make_target, capsys):
+    import time
+    from hunter.progress import describe
+    target = make_target()
+    state = st.State(target.state_db)
+    state.ensure_phase("04-map", "map")
+    state.start_phase("04-map", "1.0")
+    state.set_progress("04-map", "crawling the sites", 0, 200, "sites")
+    # Pretend the step started 20 minutes ago and 40 sites are done.
+    p = state.get_progress("04-map")
+    p.update(done=40, step_started=time.time() - 1200)
+    state.set_meta("progress:04-map", json.dumps(p))
+    state.close()
+    assert cli.main(["status", "acme"]) == 0
+    out = capsys.readouterr().out
+    assert "RUNNING" in out and "<- now" in out
+    assert "crawling the sites: 40 of 200 sites (20%), about 1 h 20 min left" in out
+    assert describe({"step": "x", "done": None, "total": 5, "unit": "hosts"}, None).startswith("x (5 hosts)")

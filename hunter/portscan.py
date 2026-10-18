@@ -86,7 +86,7 @@ def plan(scope, extra_ips: list[str] = (), max_probes: int = 2_000_000, max_addr
 
 
 async def _scan(targets: list[tuple[str, int]], rate: float, timeout: float, concurrency: int,
-                on_open) -> int:
+                on_open, on_progress=None) -> int:
     interval = 1.0 / max(rate, 0.1)
     sem = asyncio.Semaphore(concurrency)
     next_slot = time.monotonic()
@@ -108,7 +108,9 @@ async def _scan(targets: list[tuple[str, int]], rate: float, timeout: float, con
                 pass
 
     tasks = []
-    for address, port in targets:
+    for sent, (address, port) in enumerate(targets):
+        if on_progress is not None and sent % 1000 == 0:
+            on_progress(sent)
         now = time.monotonic()
         if next_slot > now:
             await asyncio.sleep(next_slot - now)
@@ -122,7 +124,7 @@ async def _scan(targets: list[tuple[str, int]], rate: float, timeout: float, con
 
 
 def scan(addresses: list[str], ports: list[int], rate: float, *, timeout: float = 3.0,
-         concurrency: int = 200, on_open=lambda _a, _p: None) -> dict[str, list[int]]:
+         concurrency: int = 200, on_open=lambda _a, _p: None, on_progress=None) -> dict[str, list[int]]:
     """Connect scan; returns {address: [open ports]}. Ports are tried in
     priority order for every address before moving to the next port, so a
     run cut short still covers the most useful ports everywhere."""
@@ -133,5 +135,5 @@ def scan(addresses: list[str], ports: list[int], rate: float, *, timeout: float 
         on_open(address, port)
 
     targets = [(a, p) for p in ports for a in addresses]
-    asyncio.run(_scan(targets, rate, timeout, concurrency, record))
+    asyncio.run(_scan(targets, rate, timeout, concurrency, record, on_progress))
     return {a: sorted(p) for a, p in found.items()}

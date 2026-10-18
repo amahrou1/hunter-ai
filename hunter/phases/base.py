@@ -123,6 +123,12 @@ class Context:
         with (self.target.logs / "run.log").open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
 
+    def progress(self, step: str, done: int | None = None, total: int | None = None, unit: str = "") -> None:
+        """Report what the phase is doing, for `hunt status` (percentage and
+        time left). Cheap; call it as often as useful."""
+        if self.phase_id:
+            self.state.set_progress(self.phase_id, step, done, total, unit)
+
     def notify(self, title: str, message: str = "", level: str = "info") -> None:
         self.notifier.send(title, message, level, target=self.target.name)
 

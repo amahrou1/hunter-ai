@@ -108,6 +108,7 @@ class DiscoverPhase(Phase):
         opener = self._opener(ctx)
         new_leads: list[str] = []
         for svc in todo:
+            ctx.progress("searching for hidden files and paths", searched, len(todo), "sites")
             if time.monotonic() > deadline:
                 gaps.append(f"discovery time budget ({cfg['max_hours']} h) used up; {len(todo) - searched} "
                             "site(s) not searched yet (they are searched on the next start)")

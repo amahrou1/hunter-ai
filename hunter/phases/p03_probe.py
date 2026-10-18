@@ -82,6 +82,7 @@ class ProbePhase(Phase):
                 port_targets += [f"{host}:{p}" for p in open_ports]
             else:
                 named.append(host)
+        ctx.progress("finding live web services", None, len(hosts), "hosts")
         new_services = self._probe(ctx, store, binary, named) if named else 0
         if port_targets:
             new_services += self._probe(ctx, store, binary, port_targets, ports=False,
@@ -122,7 +123,10 @@ class ProbePhase(Phase):
         minutes = len(work.addresses) * len(work.ports) / rate / 60
         ctx.log(f"port scan: {len(work.addresses)} address(es) x {len(work.ports)} port(s) "
                 f"at {rate:g}/s (about {minutes:.0f} min)")
-        found = portscan.scan(work.addresses, work.ports, rate)
+        total = len(work.addresses) * len(work.ports)
+        ctx.progress("port scan of the IP ranges", 0, total, "checks")
+        found = portscan.scan(work.addresses, work.ports, rate,
+                              on_progress=lambda n: ctx.progress("port scan of the IP ranges", n, total, "checks"))
         exposed = []
         for address, ports in found.items():
             store.add_host(address, A.IN, "portscan")
@@ -251,7 +255,10 @@ class ProbePhase(Phase):
             urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=str(proxy.ca_bundle))))
         done = 0
         scope = ctx.scope()
-        for svc in store.services():
+        services = store.services()
+        for index, svc in enumerate(services):
+            if index % 10 == 0:
+                ctx.progress("checking each site's 'not found' page", index, len(services), "sites")
             if not scope.host_in_scope(svc["host"]):
                 continue  # avoided since
             if svc["baseline"] and json.loads(svc["baseline"]).get("kind") != "unknown":

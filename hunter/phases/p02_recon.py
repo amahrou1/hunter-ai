@@ -99,6 +99,7 @@ class ReconPhase(Phase):
         runner = ctx.passive_runner()
         found = 0
         for index, root in enumerate(roots):
+            ctx.progress(f"passive subdomain discovery ({root})", index, len(roots), "domains")
             run = runner.run("subfinder",
                              [str(binary), "-silent", "-all", "-d", root, "-oJ", "-nc", "-timeout", "20"],
                              name=f"subfinder-{index}-{root}", timeout_s=900)
@@ -122,6 +123,7 @@ class ReconPhase(Phase):
             ctx.log("dnsx not installed; marking in-scope hosts unresolved")
             return 0, 0, 0
         runner = ctx.passive_runner()
+        ctx.progress("resolving host names", None, len(pending), "hosts")
         run = runner.run("dnsx",
                          [str(binary), "-silent", "-json", "-a", "-aaaa", "-cname", "-resp", "-nc"],
                          name="dnsx-resolve", timeout_s=1800, stdin_lines=pending)

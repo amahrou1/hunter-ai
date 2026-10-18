@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import time
 import sqlite3
 from pathlib import Path
 from typing import Iterable
@@ -129,7 +130,29 @@ class State:
         self.db.execute(
             "UPDATE phases SET status=?, version=?, attempts=attempts+1, started_at=?, finished_at=NULL "
             "WHERE phase_id=?", (RUNNING, version, now(), phase_id))
+        self.clear_progress(phase_id)
         self.event("phase_start", phase_id, f"version {version}")
+
+    # progress -------------------------------------------------------------
+    def set_progress(self, phase_id: str, step: str, done: int | None, total: int | None,
+                     unit: str = "") -> None:
+        """What a running phase is doing: a step name and, when countable,
+        how many items of how many are done. done=None: not countable."""
+        key = f"progress:{phase_id}"
+        old = self.get_progress(phase_id)
+        started = old["step_started"] if old and old.get("step") == step else time.time()
+        self.set_meta(key, json.dumps({"step": step, "done": done, "total": total, "unit": unit,
+                                       "step_started": started, "updated": time.time()}))
+
+    def get_progress(self, phase_id: str) -> dict | None:
+        raw = self.get_meta(f"progress:{phase_id}")
+        try:
+            return json.loads(raw) if raw else None
+        except ValueError:
+            return None
+
+    def clear_progress(self, phase_id: str) -> None:
+        self.db.execute("DELETE FROM meta WHERE key=?", (f"progress:{phase_id}",))
 
     def finish_phase(self, phase_id: str, status: str, summary: str) -> None:
         if status not in PHASE_STATES:

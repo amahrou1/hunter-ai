@@ -31,7 +31,7 @@ hunt new acme                      # creates ~/targets/acme with template files
 nano ~/targets/acme/policy.txt     # paste the program page
 hunt start acme                    # runs in the background (tmux)
 hunt watch acme                    # live view; leave with Ctrl+b then d
-hunt status acme                   # phases, blockers, AI usage
+hunt status acme                   # phases, live progress with % and time left, blockers
 hunt stop acme                     # stop; `hunt start acme` resumes
 hunt tell acme "focus api.acme.com"   # steer the run, also while it runs
 hunt tell acme                     # list your messages and what they changed

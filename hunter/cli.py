@@ -196,9 +196,17 @@ def _status_one(target: target_mod.Target) -> None:
     state = st.State(target.state_db)
     try:
         _print("")
-        width = max((len(r["phase_id"]) for r in state.phases()), default=10)
-        for row in state.phases():
+        from .progress import describe
+        rows = state.phases()
+        width = max((len(r["phase_id"]) for r in rows), default=10)
+        for row in rows:
+            if row["status"] == st.RUNNING:
+                _print(f"  {row['phase_id']:<{width}}  {row['status']:<15} <- now")
+                _print(f"  {'':<{width}}  {describe(state.get_progress(row['phase_id']), row['started_at'])}")
+                continue
             _print(f"  {row['phase_id']:<{width}}  {row['status']:<15} {row['summary'] or ''}"[:200])
+        settled = sum(1 for r in rows if r["status"] in st.SETTLED)
+        _print(f"\n  {settled} of {len(rows)} phases finished.")
         open_blockers = state.open_blockers()
         _print("")
         if open_blockers:
