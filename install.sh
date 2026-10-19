@@ -127,6 +127,20 @@ else
   say "arjun not installed (optional; parameter discovery falls back to a wordlist)."
 fi
 
+# Headless browser (Playwright Chromium) for the client-side testing phases:
+# DOM/stored/postMessage/window.name PoCs that curl cannot show. Best effort -
+# the phases note it is unavailable and fall back to curl if this fails.
+chmod +x "$REPO_DIR/bin/hbrowse" 2>/dev/null || true
+ln -sf "$REPO_DIR/bin/hbrowse" "$HOME/.local/bin/hbrowse" 2>/dev/null || true
+say "Installing the headless browser (Playwright Chromium)"
+if "$VENV/bin/python" -m playwright install --with-deps chromium >/dev/null 2>&1 \
+   || "$VENV/bin/python" -m playwright install chromium >/dev/null 2>&1; then
+  say "Headless browser ready."
+else
+  say "Headless browser not installed (optional). Install later with:"
+  say "  $VENV/bin/python -m playwright install --with-deps chromium"
+fi
+
 # --- 6. Self-check ------------------------------------------------------
 "$REPO_DIR/bin/hunt" version >/dev/null || fail "The hunt command does not start."
 

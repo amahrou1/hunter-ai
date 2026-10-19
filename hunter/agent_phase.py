@@ -114,6 +114,18 @@ Also send it as the User-Agent on ordinary requests to catch log-viewer XSS. For
 record a lead (hk add lead blind-xss <endpoint> --evidence "beacon in <field>") so a later callback can be
 traced back after this phase ends."""
 
+BROWSER_HELP = """Headless browser (`hbrowse`): a real Chromium that runs THROUGH the scope proxy, for anything curl
+cannot show - DOM / client-side XSS, open redirects that actually land, postMessage and window.name PoCs,
+and authenticated or stored-XSS flows (pass a session cookie). Every request it makes is scope-checked,
+rate-limited and logged like any other, and uses the residential egress if one is set. Usage:
+  hbrowse <url> [--window-name NAME] [--cookie 'k=v; k2=v2'] [--header 'K: V'] [--eval 'JS expression']
+          [--click 'CSS selector'] [--wait MS] [--screenshot]
+It prints JSON: final URL, HTTP status, page title, any JS dialog that fired (alert/confirm/prompt = XSS
+proof), console messages, the result of --eval, and any callback the page made to your OOB / blind-XSS
+host; it saves dom.html (and a screenshot with --screenshot) in the current directory. Use it to CONFIRM
+client-side leads end-to-end - e.g. set --window-name to trip an inspector/preview gate, --eval to read a
+DOM sink, a session --cookie to reach authenticated pages - instead of leaving them as untested leads."""
+
 
 class AgentPhase(Phase):
     """Base for a phase driven by an AI agent. Subclasses set id/name/version/
@@ -200,6 +212,8 @@ class AgentPhase(Phase):
                     oob_hosts.append(host)
             if oob.get("temp_mail", True):
                 env["HUNTER_TEMP_MAIL"] = "1"
+        browser = ctx.settings.get("browser", {}) or {}
+        env["HUNTER_BROWSER"] = "1" if browser.get("enabled", True) else "0"
         extra = list(ctx.settings.get("agent", {}).get("extra_hosts", [])) + oob_hosts + list(self.allow_hosts)
         env["HUNTER_EXTRA_HOSTS"] = ",".join(extra)
         for secret_name, env_name in self.secret_env.items():
@@ -229,17 +243,23 @@ class AgentPhase(Phase):
         """Your own testing infrastructure, offered to the agent and gated on the
         program rules: the agent uses each only where the policy allows."""
         oob = ctx.settings.get("oob", {}) or {}
-        if not oob.get("enabled", True):
+        browser = ctx.settings.get("browser", {}) or {}
+        oob_on = oob.get("enabled", True)
+        browser_on = browser.get("enabled", True)
+        if not oob_on and not browser_on:
             return ""
         parts = ["", "== YOUR TESTING INFRASTRUCTURE (yours, not targets - already allowed through the guard) =="]
-        if oob.get("temp_mail", True):
-            parts.append(MAILBOX_HELP)
-        if oob.get("callback_host"):
-            ports = oob.get("listener_ports") or [80, 8080]
-            parts.append(OOB_HELP.format(host=oob["callback_host"], port=ports[0],
-                                         ports=", ".join(str(p) for p in ports)))
-        if oob.get("blind_xss_url"):
-            parts.append(BLIND_XSS_HELP.format(url=oob["blind_xss_url"]))
+        if oob_on:
+            if oob.get("temp_mail", True):
+                parts.append(MAILBOX_HELP)
+            if oob.get("callback_host"):
+                ports = oob.get("listener_ports") or [80, 8080]
+                parts.append(OOB_HELP.format(host=oob["callback_host"], port=ports[0],
+                                             ports=", ".join(str(p) for p in ports)))
+            if oob.get("blind_xss_url"):
+                parts.append(BLIND_XSS_HELP.format(url=oob["blind_xss_url"]))
+        if browser_on:
+            parts.append(BROWSER_HELP)
         parts.append("Never aim this infrastructure at anything out of scope; the scope and rate rules still apply.")
         return "\n".join(parts) + "\n"
 

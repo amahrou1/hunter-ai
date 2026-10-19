@@ -53,6 +53,10 @@ Tools:
   hunt tools install         download or update the recon tools
   hunt models role <role> <profile[:tier]>   advanced: one task on another model
 
+Infrastructure:
+  hunt oob                   out-of-band / blind-XSS / mail infra the agents use
+  hunt egress <url|off>      route target traffic through a residential proxy
+
 Maintenance:
   hunt update                download and install the newest version
   hunt version
@@ -560,6 +564,48 @@ def cmd_oob(args) -> int:
     return 0
 
 
+def _mask_proxy(url: str) -> str:
+    from urllib.parse import urlsplit
+    try:
+        u = urlsplit(url if "://" in url else "http://" + url)
+        host = u.hostname or url
+        port = f":{u.port}" if u.port else ""
+        cred = f"{u.username}:***@" if u.username else ""
+        return f"{(u.scheme or 'http')}://{cred}{host}{port}"
+    except Exception:
+        return "(set)"
+
+
+def cmd_egress(args) -> int:
+    """Show or set the upstream/residential proxy for target traffic."""
+    settings = config.load_settings()
+    proxy = settings.setdefault("proxy", {})
+    if args.url is not None:
+        value = args.url.strip()
+        if value.lower() in ("off", "none", "direct", ""):
+            proxy["upstream"] = ""
+            config.save_settings(settings)
+            _print("Egress set to DIRECT (this VPS's datacenter IP).")
+        else:
+            proxy["upstream"] = value
+            config.save_settings(settings)
+            _print("Saved. Target traffic will route through the upstream proxy on the next run.")
+    current = (proxy.get("upstream") or "").strip()
+    _print(f"\nTarget egress: {_mask_proxy(current) if current else 'direct (this VPS datacenter IP)'}")
+    if not current:
+        _print("\nSome targets block datacenter IPs at the edge (Akamai 403) or by IP-class rules, so the")
+        _print("whole surface looks closed from this VPS. Route target traffic through a residential/upstream")
+        _print("HTTP proxy so the target sees a residential IP instead:")
+        _print("  hunt egress http://USER:PASS@HOST:PORT     # a residential-proxy provider endpoint,")
+        _print("                                             # or your home connection via an SSH tunnel")
+        _print("  hunt egress off                            # back to direct")
+        _print("Only TARGET traffic is affected; the scope guard, rate limit and logging still apply, and")
+        _print("OOB / model / passive-source hosts always go direct.")
+    else:
+        _print("Run `hunt egress off` to go back to direct egress.")
+    return 0
+
+
 def cmd_leads(args) -> int:
     from hunter import assets as A
     target = _load_target(args.target)
@@ -700,6 +746,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--on", action="store_true")
     p.add_argument("--off", action="store_true")
     p.set_defaults(func=cmd_oob)
+    p = sub.add_parser("egress")
+    p.add_argument("url", nargs="?", help="upstream proxy URL (http://user:pass@host:port), or 'off' for direct")
+    p.set_defaults(func=cmd_egress)
     p = sub.add_parser("leads")
     p.add_argument("target")
     p.add_argument("--status", help="filter, e.g. signature-match, unverified, ai-confirmed, dismissed")

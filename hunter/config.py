@@ -128,6 +128,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "proxy": {
         "port": 0,  # 0 = pick a free port per run
         "log_body_bytes": 4096,
+        # Route TARGET traffic out through a residential/upstream HTTP proxy so
+        # the target sees a residential IP instead of this VPS's datacenter IP
+        # (which Akamai/WAF rules often block). Empty = direct. Example:
+        # "http://user:pass@gate.provider.com:7000". Set with: hunt egress <url>.
+        # Only target egress is affected; the scope guard, rate limit and
+        # logging still apply, and OOB/model/passive hosts still go direct.
+        "upstream": "",
         # Infrastructure, never targets: reached directly, never scope-checked.
         "passthrough": [
             "api.z.ai", "open.bigmodel.cn", "api.deepseek.com", "api.anthropic.com",
@@ -169,6 +176,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "listener_ports": [80, 8080],
         "blind_xss_url": "https://xss.report/c/abdalah336",
         "temp_mail": True,                           # mail.tm temporary mailboxes
+    },
+    # A scope-proxied headless Chromium the agents can drive (the `hbrowse`
+    # helper) for anything curl cannot show: DOM / client-side XSS, postMessage
+    # and window.name PoCs, open-redirect landing, and authenticated or stored
+    # XSS flows. Its traffic goes through the same scope proxy. Install the
+    # browser with: .venv/bin/python -m playwright install --with-deps chromium
+    # (install.sh does this; `hunt doctor` reports if it is missing).
+    "browser": {
+        "enabled": True,
     },
     # Filled in by `hunt doctor`; never set by hand.
     "detected": {},

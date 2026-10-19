@@ -70,6 +70,7 @@ class ScopeProxy:
         self.log_dir = log_dir
         cfg = settings.get("proxy", {})
         self.port = int(cfg.get("port") or 0) or free_port()
+        self.upstream = (cfg.get("upstream") or "").strip()
         self.passthrough = [h.lower() for h in cfg.get("passthrough", [])]
         for host in _oob_hosts(settings):
             if host not in self.passthrough:
@@ -98,6 +99,26 @@ class ScopeProxy:
     def running(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
+    def _upstream_args(self) -> list[str]:
+        """mitmproxy upstream mode: forward TARGET traffic to a residential /
+        upstream HTTP proxy so the target sees a residential IP. The scope
+        addon still inspects and blocks every request before it is forwarded,
+        so scope enforcement is unchanged. Empty upstream = direct egress."""
+        if not self.upstream:
+            return []
+        from urllib.parse import urlsplit
+        raw = self.upstream if "://" in self.upstream else f"http://{self.upstream}"
+        u = urlsplit(raw)
+        if not u.hostname:
+            raise ProxyError(f"proxy.upstream is not a valid URL: {self.upstream!r}")
+        scheme = u.scheme or "http"
+        hostport = u.hostname + (f":{u.port}" if u.port else "")
+        args = ["--mode", f"upstream:{scheme}://{hostport}"]
+        if u.username:
+            auth = u.username + (f":{u.password}" if u.password else "")
+            args += ["--set", f"upstream_auth={auth}"]
+        return args
+
     # ---------------------------------------------------------------- start
     def start(self, timeout: float = 45.0) -> None:
         if self.running():
@@ -125,6 +146,7 @@ class ScopeProxy:
         ]
         if self.passthrough:
             cmd += ["--set", f"ignore_hosts={_ignore_pattern(self.passthrough)}"]
+        cmd += self._upstream_args()
         self._log_handle = (self.log_dir / "proxy.log").open("a", encoding="utf-8")
         self.process = subprocess.Popen(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,
                                         stdin=subprocess.DEVNULL, start_new_session=True)

@@ -1,3 +1,6 @@
 # Python packages for hunter-ai (installed into ~/hunter-ai/.venv by install.sh).
 # mitmproxy runs the scope guard that blocks out-of-scope traffic.
 mitmproxy>=10
+# playwright drives the scope-proxied headless browser (hbrowse) for client-side
+# testing. install.sh also runs `playwright install chromium` to fetch the browser.
+playwright>=1.40

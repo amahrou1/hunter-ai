@@ -184,6 +184,34 @@ def check_agents(report: Report, settings: dict, secrets: dict[str, str]) -> Non
     report.add(PASS if ok_strong else FAIL, "AI session (strong model)", msg_strong)
 
 
+def check_browser(report: Report, settings: dict) -> None:
+    """The scope-proxied headless browser (hbrowse) is optional: the client-side
+    testing phases use it when present and fall back to curl when not."""
+    browser = settings.get("browser", {}) or {}
+    if not browser.get("enabled", True):
+        report.add(PASS, "Headless browser", "disabled in settings (browser.enabled=false)")
+        return
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        report.add(WARN, "Headless browser",
+                   "Playwright not installed (optional; DOM/client-side PoCs need it). Install: "
+                   ".venv/bin/python -m playwright install --with-deps chromium")
+        return
+    try:
+        with sync_playwright() as pw:
+            path = pw.chromium.executable_path
+        if path and os.path.exists(path):
+            report.add(PASS, "Headless browser", "Playwright Chromium ready")
+        else:
+            report.add(WARN, "Headless browser",
+                       "Chromium not downloaded. Run: .venv/bin/python -m playwright install --with-deps chromium")
+    except Exception as exc:
+        report.add(WARN, "Headless browser",
+                   f"Playwright present but Chromium not usable ({exc}). "
+                   "Run: .venv/bin/python -m playwright install --with-deps chromium")
+
+
 def run_doctor(out: Callable[[str], None] = print, quick: bool = False) -> int:
     report = Report(out)
     try:
@@ -197,6 +225,7 @@ def run_doctor(out: Callable[[str], None] = print, quick: bool = False) -> int:
     check_system(report)
     check_secrets(report, settings, secrets, send_test=not quick)
     check_proxy(report, settings)
+    check_browser(report, settings)
     if not settings["researcher"].get("handle"):
         report.add(WARN, "Username", "not set. Some programs require it in a header. Set it with: hunt handle <name>")
     if not quick and not report.failed:
