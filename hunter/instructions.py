@@ -71,6 +71,7 @@ PHASE_WORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("09-injection", ("injection", "injections", "xss", "sqli", "sql injection", "ssti", "ssrf")),
     ("10-misconfig", ("misconfig", "misconfiguration", "misconfigurations", "cors", "cache")),
     ("10b-skills", ("skills", "skill pass", "skills pass")),
+    ("10c-hunt", ("free hunt", "deep hunt", "deephunt", "creative hunt", "chaining")),
 )
 PROTECTED = {
     "00-intake": "it builds the scope guard; nothing may run without it",

@@ -21,6 +21,7 @@ from .ai_accounts import AIAccountsPhase
 from .ai_authz import AIAuthzPhase
 from .ai_injection import AIInjectionPhase
 from .ai_misconfig import AIMisconfigPhase
+from .ai_hunt import AIHuntPhase
 from .ai_validate import AIValidatePhase
 from .ai_disprove import AIDisprovePhase
 from .ai_report import AIReportPhase
@@ -48,6 +49,9 @@ def all_phases() -> list[Phase]:
         # Skills pass is a TESTING phase: it must run before validation so any
         # finding/lead it produces is validated, disproved and reported.
         AISkillsPhase(),
+        # Free hunt: the creative capstone. Runs after all structured testing and
+        # the skills pass, with the whole picture in hand, and before validation.
+        AIHuntPhase(),
         AIValidatePhase(),
         AIDisprovePhase(),
         AIReportPhase(),

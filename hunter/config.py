@@ -83,6 +83,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "accounts": "active:strong",
         "authz": "active:strong",
         "injection": "active:strong",
+        # The free-hunt capstone: creative reasoning and chaining -> strong tier.
+        "hunter": "active:strong",
     },
     "agent": {
         "max_turns": 80,

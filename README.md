@@ -116,6 +116,7 @@ adapts, follows leads, and records what it finds.
 | 09-injection | XSS/SQLi/SSRF/SSTI/redirect, AI-feature tests (detect-only) | strong |
 | 10-misconfig | CORS, headers, cache, disclosure, exposed services | flash |
 | 10b-skills | optional pass over your skill playbooks | strong |
+| 10c-hunt | free, goal-driven deep hunt: chains leads into impact | strong |
 | 11-validate | re-prove with controls, set severity and CVSS | strong (max) |
 | 12-disprove | adversarial second pass -> confirmed or dropped | strong (max) |
 | 13-report | house-style drafts; you verify and submit | strong (max) |
@@ -127,7 +128,33 @@ report.
 
 Change any phase's model with `hunt models role <role> <profile:tier>` (roles:
 scanner, prober, mapper, discoverer, jsanalyst, misconfig, intel, accounts,
-authz, injection, validator, disprover, writer).
+authz, injection, hunter, validator, disprover, writer).
+
+## Free hunt (the creative capstone)
+
+The structured phases guarantee coverage; they do not improvise. Phase `10c-hunt`
+runs after all of them, with the whole picture in hand, and turns the agent
+loose: it reads the full inventory, every phase's handoff (including their
+"what the next phase should do" to-do lists), your own past `reports.txt`, and
+other researchers' `resolved-reports.txt` (the program's bug patterns), decides
+where the bugs are, and hunts - with the full toolset (headless browser, OOB,
+mail, accounts) and the same scope/rate guards. The goal is to **chain** smaller
+issues into real impact, which is where most high bounties actually live.
+
+The known failure of agents like this is laziness - a few minutes of poking then
+"no bugs found". Two things fight it:
+
+- **Framing (true, not a quota):** active programs on Intigriti/Bugcrowd take
+  valid criticals and highs every day, so the surface almost certainly holds
+  findable bugs; a shallow "nothing" is a weak hunter. But the challenge is to
+  *effort and creativity*, never a number - a fabricated finding is thrown out
+  by the validate/disprove phases and is worse than none.
+- **An enforced floor:** the agent logs every hypothesis it tests to
+  `hypotheses-tested.md`; `check()` requires a minimum, so a thin log is PARTIAL
+  and the hunt simply continues on the next run. Shallow effort does not pass.
+
+Anything it finds flows into `11-validate -> 12-disprove -> 13-report` like any
+other finding, so creativity never bypasses proof.
 
 Each phase works through `hk`, the toolkit the agent uses: it reads and writes
 the shared inventory (hosts, services, endpoints, leads, findings), imports
