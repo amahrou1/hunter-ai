@@ -598,19 +598,35 @@ def cmd_reset(args) -> int:
     if not target.state_db.exists():
         _print(f"{target.name} has not run yet; nothing to reset.")
         return 0
+    # Re-doing a mapping phase must also clear the per-item "done" flags, or the
+    # agent would see everything already handled and skip it.
+    redo = {
+        "03-probe": ["UPDATE hosts SET probed=0", "DELETE FROM meta WHERE key='portscan_key'"],
+        "04-map": ["UPDATE services SET crawled=0"],
+        "05-discover": ["UPDATE services SET discovered=0"],
+    }
     state = st.State(target.state_db)
     try:
         rows = state.phases()
         known = {r["phase_id"] for r in rows}
+        def _redo(pid):
+            for sql in redo.get(pid, []):
+                try:
+                    state.db.execute(sql)
+                except Exception:
+                    pass
         if args.phase:
             if args.phase not in known:
                 _print(f"No phase '{args.phase}' for {target.name}. Known: " + ", ".join(sorted(known)))
                 return 1
             state.reset_phase(args.phase, "reset by hand", reset_attempts=True)
-            _print(f"{args.phase} cleared. Run: hunt start {target.name}")
+            _redo(args.phase)
+            extra = " (its per-service progress was cleared, so it re-runs fully)" if args.phase in redo else ""
+            _print(f"{args.phase} cleared{extra}. Run: hunt start {target.name}")
         else:
             for row in rows:
                 state.reset_phase(row["phase_id"], "reset by hand", reset_attempts=True)
+                _redo(row["phase_id"])
             _print(f"All phases for {target.name} cleared. Run: hunt start {target.name}")
     finally:
         state.close()

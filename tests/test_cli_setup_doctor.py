@@ -259,3 +259,24 @@ def test_cli_leads_groups_by_kind(env, make_target, capsys):
     out = capsys.readouterr().out
     assert "3 lead(s)" in out and "exposed-service (1)" in out and "events.acme.test" in out
     assert "Redis answers PING" in out
+
+
+def test_cli_reset_phase_clears_per_service_progress(env, make_target, capsys):
+    from hunter import assets as A
+    from hunter import state as st
+    make_target("acme")
+    t = target_mod.Target(env["targets"] / "acme")
+    t.output.mkdir(parents=True, exist_ok=True)
+    state = st.State(t.state_db)
+    state.ensure_phase("05-discover", "discover")
+    state.finish_phase("05-discover", st.DONE, "done")
+    store = A.Assets(state.db)
+    store.upsert_service("a.acme.test", 443, "https", status=200)
+    store.mark_service(store.services()[0]["id"], "discovered")
+    state.close()
+    assert cli.main(["reset", "acme", "05-discover"]) == 0
+    assert "re-runs fully" in capsys.readouterr().out
+    state = st.State(t.state_db)
+    assert state.phase("05-discover")["status"] == st.PENDING
+    assert A.Assets(state.db).services()[0]["discovered"] == 0   # flag cleared -> will re-fuzz
+    state.close()
