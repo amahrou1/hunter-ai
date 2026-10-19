@@ -534,6 +534,35 @@ def cmd_findings(args) -> int:
     return 0
 
 
+def cmd_leads(args) -> int:
+    from hunter import assets as A
+    target = _load_target(args.target)
+    if not target.state_db.exists():
+        _print(f"{target.name} has not run yet.")
+        return 0
+    state = st.State(target.state_db)
+    try:
+        rows = A.Assets(state.db).leads(args.status)
+        if not rows:
+            _print("No leads recorded yet." if not args.status else f"No leads with status {args.status}.")
+            return 0
+        by_kind: dict = {}
+        for r in rows:
+            by_kind.setdefault(r["kind"], []).append(r)
+        _print(f"{len(rows)} lead(s) for {target.name}:\n")
+        for kind in sorted(by_kind):
+            group = by_kind[kind]
+            _print(f"{kind} ({len(group)}):")
+            for r in group:
+                _print(f"  #{r['id']} [{r['status']}] {r['url']}")
+                if r["evidence"]:
+                    _print(f"        {r['evidence'][:160]}")
+            _print("")
+    finally:
+        state.close()
+    return 0
+
+
 def cmd_reset(args) -> int:
     """Clear a stuck phase (or all phases) so the next `hunt start` runs it again.
 
@@ -623,6 +652,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("chat")
     p.add_argument("target")
     p.set_defaults(func=cmd_chat)
+    p = sub.add_parser("leads")
+    p.add_argument("target")
+    p.add_argument("--status", help="filter, e.g. signature-match, unverified, ai-confirmed, dismissed")
+    p.set_defaults(func=cmd_leads)
     p = sub.add_parser("findings")
     p.add_argument("target")
     p.add_argument("--status", choices=["candidate", "validated", "confirmed", "disproved", "reported"])

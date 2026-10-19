@@ -241,3 +241,21 @@ def test_cli_findings_lists_and_points_to_reports(env, make_target, capsys):
     assert "IDOR on /api/orders" in out and "high" in out
     assert out.index("high") < out.index("low")        # sorted by severity
     assert "1-idor.md" in out
+
+
+def test_cli_leads_groups_by_kind(env, make_target, capsys):
+    from hunter import assets as A
+    from hunter import state as st
+    make_target("acme")
+    t = target_mod.Target(env["targets"] / "acme")
+    t.output.mkdir(parents=True, exist_ok=True)
+    state = st.State(t.state_db)
+    store = A.Assets(state.db)
+    store.add_lead("exposed-service", "tcp://10.0.0.2:6379", "03-probe", "Redis answers PING", "signature-match")
+    store.add_lead("takeover", "https://events.acme.test/", "02-recon", "CNAME dangling", "signature-match")
+    store.add_lead("api-docs", "https://acme.test/swagger.json", "05-discover", "OpenAPI doc", "signature-match")
+    state.close()
+    assert cli.main(["leads", "acme"]) == 0
+    out = capsys.readouterr().out
+    assert "3 lead(s)" in out and "exposed-service (1)" in out and "events.acme.test" in out
+    assert "Redis answers PING" in out
