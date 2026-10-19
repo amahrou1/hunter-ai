@@ -113,10 +113,13 @@ class AgentPhase(Phase):
         env = self._env(ctx, proxy, workdir)
         scope_summary = self._scope_summary(ctx)
         prompt = PREAMBLE.format(scope_summary=scope_summary, task=self.task(ctx))
-        ctx.log(f"AI phase {self.id}: starting ({self.role})")
+        agent_cfg = ctx.settings.get("agent", {})
+        minutes = float(agent_cfg.get("phase_minutes", {}).get(self.id, self.timeout_minutes))
+        turns = int(agent_cfg.get("phase_turns", {}).get(self.id, self.max_turns))
+        ctx.log(f"AI phase {self.id}: starting ({self.role}, up to {minutes:.0f} min)")
         ctx.progress(f"{self.name}: the AI is working", None, None)
         result = ctx.agent(self.role, prompt, name=self.id, workdir=workdir, base_env=env,
-                           bare=False, max_turns=self.max_turns, timeout_minutes=self.timeout_minutes,
+                           bare=False, max_turns=turns, timeout_minutes=minutes,
                            add_dirs=[workdir])
         self._save_handoff(ctx, workdir)
         if result.fatal:

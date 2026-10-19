@@ -21,22 +21,31 @@ class AIProbePhase(AgentPhase):
     requires = ("00-intake", "02-recon")
     role = "prober"
     max_turns = 70
-    timeout_minutes = 90
+    timeout_minutes = 180
 
     def task(self, ctx: Context) -> str:
         return (
-            "Find and fingerprint the live web services.\n"
-            "1. `hk hosts --resolved` for the in-scope resolved hosts. Probe them with httpx "
-            "(-json -title -tech-detect -web-server -status-code -content-length -hash sha256 "
-            "-ports 80,443,8080,8443 into a file), then `hk import httpx <file>`.\n"
-            "2. If the scope has IP or CIDR ranges, run `hk portscan` (it scans only in-scope addresses at "
-            "the program's rate, skips firewalls that answer every port, and verifies sensitive services). "
-            "Probe the web ports it reports with httpx and import them too.\n"
-            "3. `hk baseline` to record each service's 'not found' answer (later fuzzing needs this).\n"
-            "4. `hk takeover` to re-check subdomain-takeover candidates.\n"
-            "5. Sanity-check: with `hk services` look for the same page repeated on many hosts (a load "
-            "balancer default); deprioritise those (`hk priority <host> 10`) and note it.\n"
-            "Finish when the live services are fingerprinted and baselined."
+            "Find and fingerprint the live web services. Work in BATCHES, not host by host - you have many "
+            "hosts and a time budget.\n"
+            "1. Get the hosts still to probe: `hk hosts --unprobed > todo.txt` (on a fresh run this is all "
+            "resolved in-scope hosts; on a resumed run it is only what is left - the rest are already done, "
+            "do not redo them). Only resolved in-scope hosts are listed, so you will not waste time on the "
+            "dead name tail.\n"
+            "2. Probe them in ONE httpx run, not one call per host: "
+            "`httpx -l todo.txt -json -o httpx.jsonl -title -tech-detect -web-server -status-code "
+            "-content-length -hash sha256 -ports 80,443,8080,8443 -timeout 10 -rl <scope rate> -nc`. "
+            "Then `hk import httpx httpx.jsonl`. Re-run on any remaining unprobed hosts until none are left.\n"
+            "3. If the scope has IP or CIDR ranges, run `hk portscan` once (it scans only in-scope addresses "
+            "at the program rate, skips firewalls that answer every port, verifies sensitive services). It "
+            "prints web targets - probe those with httpx and import them too.\n"
+            "4. `hk baseline` to record each service's 'not found' answer (needed by later fuzzing). This is "
+            "one pass over all services; let it run.\n"
+            "5. `hk takeover` to re-check subdomain-takeover candidates, and HTTP-probe any flagged host to "
+            "see if the provider shows an unclaimed page.\n"
+            "6. Sanity-check with `hk services`: if the same page repeats on many hosts (a load-balancer "
+            "default), deprioritise them (`hk priority <host> 10`) and note it.\n"
+            "Use `hk progress \"probing\" <done> <total> hosts` as you go. Finish when `hk hosts --unprobed` "
+            "is empty and baselines are built. Summarise the live services in ./handoff.md."
         )
 
     def check(self, ctx: Context, store: A.Assets) -> PhaseResult:

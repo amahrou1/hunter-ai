@@ -19,7 +19,7 @@ class AIDiscoverPhase(AgentPhase):
     requires = ("00-intake", "03-probe")
     role = "discoverer"
     max_turns = 90
-    timeout_minutes = 180
+    timeout_minutes = 300
 
     def task(self, ctx: Context) -> str:
         return (
