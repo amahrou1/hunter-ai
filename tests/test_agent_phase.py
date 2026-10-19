@@ -83,3 +83,27 @@ def test_ai_recon_blocks_when_nothing_resolves(env, make_target, settings_secret
         ctx.close()
     assert result.status == st.PARTIAL
     assert [b["need"] for b in st.State(target.state_db).open_blockers()] == ["At least one resolvable in-scope host"]
+
+
+def test_phase_env_and_preamble_carry_oob_infra(env, make_target, settings_secrets, notifier, tmp_path):
+    from hunter.phases.ai_injection import AIInjectionPhase
+    from hunter.phases.base import Context
+    target = make_target("acme")
+    target.output.mkdir(parents=True, exist_ok=True)
+    sc.save(sc.Scope(in_scope=[sc.parse_asset("*.acme.test")], rules={"effective_rps": 10}), target.scope_file)
+    settings = settings_secrets[0]
+    settings["oob"] = {"enabled": True, "callback_host": "203.0.113.9", "listener_ports": [80],
+                       "blind_xss_url": "https://xss.example/c/me", "temp_mail": True}
+    state = st.State(target.state_db)
+    ctx = Context(target, state, settings, {"GLM_API_KEY": "k"}, notifier)
+    ctx.phase_id = "09-injection"
+    phase = AIInjectionPhase()
+    try:
+        envd = phase._env(ctx, ctx.proxy(), target.output / "w")
+    finally:
+        ctx.close()
+        state.close()
+    assert "203.0.113.9" in envd["HUNTER_EXTRA_HOSTS"] and "xss.example" in envd["HUNTER_EXTRA_HOSTS"]
+    assert envd["HUNTER_OOB_HOST"] == "203.0.113.9" and envd["HUNTER_BLIND_XSS_URL"] == "https://xss.example/c/me"
+    infra = phase._infra(ctx)
+    assert "mail.tm" in infra and "203.0.113.9" in infra and "https://xss.example/c/me" in infra

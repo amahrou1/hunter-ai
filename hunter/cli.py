@@ -534,6 +534,32 @@ def cmd_findings(args) -> int:
     return 0
 
 
+def cmd_oob(args) -> int:
+    """View or change the out-of-band testing infrastructure the agents use."""
+    settings = config.load_settings()
+    oob = settings.setdefault("oob", {})
+    changed = False
+    if args.callback_host is not None:
+        oob["callback_host"] = args.callback_host; changed = True
+    if args.blind_xss_url is not None:
+        oob["blind_xss_url"] = args.blind_xss_url; changed = True
+    if args.on:
+        oob["enabled"] = True; changed = True
+    if args.off:
+        oob["enabled"] = False; changed = True
+    if changed:
+        config.save_settings(settings)
+        _print("Saved.")
+    _print(f"Out-of-band infrastructure (enabled: {oob.get('enabled', True)}):")
+    _print(f"  Callback / SSRF server : {oob.get('callback_host') or '(none)'}")
+    _print(f"  Listener ports         : {', '.join(str(p) for p in oob.get('listener_ports', [])) or '(none)'}")
+    _print(f"  Blind-XSS collector    : {oob.get('blind_xss_url') or '(none)'}")
+    _print(f"  Temporary mail (mail.tm): {oob.get('temp_mail', True)}")
+    _print("\nThe agents use these only where the program rules allow (e.g. temp mail only when any email is "
+           "accepted). Change: hunt oob --callback-host <ip> --blind-xss-url <url> | --on | --off")
+    return 0
+
+
 def cmd_leads(args) -> int:
     from hunter import assets as A
     target = _load_target(args.target)
@@ -652,6 +678,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("chat")
     p.add_argument("target")
     p.set_defaults(func=cmd_chat)
+    p = sub.add_parser("oob")
+    p.add_argument("--callback-host", dest="callback_host")
+    p.add_argument("--blind-xss-url", dest="blind_xss_url")
+    p.add_argument("--on", action="store_true")
+    p.add_argument("--off", action="store_true")
+    p.set_defaults(func=cmd_oob)
     p = sub.add_parser("leads")
     p.add_argument("target")
     p.add_argument("--status", help="filter, e.g. signature-match, unverified, ai-confirmed, dismissed")

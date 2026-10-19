@@ -39,6 +39,8 @@ hunt tell acme                     # list your messages and what they changed
 hunt chat acme                     # talk to an AI about what the run found
 hunt reset acme 02-recon           # clear a stuck phase so it runs again
 hunt findings acme                 # findings so far (by severity) and report drafts
+hunt leads acme                    # leads found so far (worth a closer look), by kind
+hunt oob                           # your OOB server, blind-XSS collector, temp-mail use
 hunt scope acme                    # what was read as in scope / out / unclear
 hunt scope acme check <url>        # would this URL be allowed?
 hunt handle amahrou1               # your platform username (headers, emails)
@@ -135,6 +137,25 @@ checks, takeover), and reports progress. Every `hk` write is scope-checked.
 3. **Orchestrator:** owns phase order, the rate limit, state, resume and
    completion. Findings only become report drafts after the validate and
    disprove phases both pass them.
+
+## Your testing infrastructure
+
+The agents are given your own out-of-band tools, used only where the program
+rules allow:
+
+- **Temporary mailboxes (mail.tm):** for sign-up, password-reset and OTP flows
+  and for making attacker/victim accounts. Used only when the program accepts
+  any email; when it requires a platform address (@intigriti.me /
+  @bugcrowdninja.com), that is used instead.
+- **Out-of-band / SSRF listener:** your own server (`hunt oob` shows the
+  address). The agent starts a listener on the VPS and points SSRF/XXE/blind
+  payloads at it, then confirms the callback from the listener log.
+- **Blind XSS:** beacons pointing at your collector, sprayed into input fields,
+  parameters and headers (including User-Agent) wherever the agent submits
+  input. A callback to your collector is the proof; you watch the collector.
+
+These hosts are not targets: the command checker and proxy allow them while
+still blocking everything out of scope. Configure with `hunt oob`.
 
 ## Target types
 

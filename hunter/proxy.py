@@ -39,6 +39,23 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _oob_hosts(settings: dict) -> list[str]:
+    """Hostnames of the operator's out-of-band infrastructure (callback server,
+    blind-XSS collector). Not targets: reachable directly, past the guard."""
+    from urllib.parse import urlsplit
+    oob = settings.get("oob", {}) or {}
+    if not oob.get("enabled", True):
+        return []
+    hosts = []
+    if oob.get("callback_host"):
+        hosts.append(str(oob["callback_host"]).lower())
+    if oob.get("blind_xss_url"):
+        host = urlsplit(str(oob["blind_xss_url"])).hostname
+        if host:
+            hosts.append(host.lower())
+    return hosts
+
+
 def _ignore_pattern(hosts: list[str]) -> str:
     alternatives = "|".join(re.escape(h) for h in hosts)
     return rf"^(.+\.)?({alternatives})(:\d+)?$"
@@ -51,6 +68,9 @@ class ScopeProxy:
         cfg = settings.get("proxy", {})
         self.port = int(cfg.get("port") or 0) or free_port()
         self.passthrough = [h.lower() for h in cfg.get("passthrough", [])]
+        for host in _oob_hosts(settings):
+            if host not in self.passthrough:
+                self.passthrough.append(host)
         self.body_bytes = int(cfg.get("log_body_bytes", 4096))
         self.confdir = paths.config_dir() / "mitmproxy"
         self.process: subprocess.Popen | None = None

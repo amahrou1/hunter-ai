@@ -141,6 +141,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "services.nvd.nist.gov", "osv.dev", "api.osv.dev",
         ],
     },
+    # Your out-of-band testing infrastructure (not targets). The agent points
+    # payloads at these and they are allowed through the command checker and the
+    # proxy. Change with `hunt oob`.
+    "oob": {
+        "enabled": True,
+        "callback_host": "38.242.235.206",          # your VPS public IP (SSRF/XXE/OOB listener)
+        "listener_ports": [80, 8080],
+        "blind_xss_url": "https://xss.report/c/abdalah336",
+        "temp_mail": True,                           # mail.tm temporary mailboxes
+    },
     # Filled in by `hunt doctor`; never set by hand.
     "detected": {},
 }

