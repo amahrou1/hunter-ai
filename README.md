@@ -41,6 +41,7 @@ hunt reset acme 02-recon           # clear a stuck phase so it runs again
 hunt findings acme                 # findings so far (by severity) and report drafts
 hunt leads acme                    # leads found so far (worth a closer look), by kind
 hunt oob                           # your OOB server, blind-XSS collector, temp-mail use
+hunt egress http://u:p@host:port   # route target traffic via a residential proxy (off = direct)
 hunt scope acme                    # what was read as in scope / out / unclear
 hunt scope acme check <url>        # would this URL be allowed?
 hunt handle amahrou1               # your platform username (headers, emails)
@@ -103,20 +104,26 @@ adapts, follows leads, and records what it finds.
 |---|---|---|
 | 00-intake | read policy, build scope, prove the guard | (policy reader) |
 | 01-intel | past and disclosed reports -> what to focus on | strong |
-| 01b-dork-github | GitHub dorking for leaked secrets, validated against the vendor | strong |
+| 01b-dork-github | GitHub dorking for leaked secrets, classified by who leaked them, validated against the vendor | strong |
 | 02-recon | subdomains, DNS, takeover candidates | flash |
 | 03-probe | live services, fingerprints, baselines, IP-range port scan | flash |
 | 04-map | crawl, endpoints, parameters, JavaScript | flash |
 | 05-discover | hidden files and paths, content-checked leads | flash |
 | 06-js | endpoints and secrets from JavaScript | flash |
+| 06b-depconf | dependency confusion: internal package names vs public registries | strong |
 | 07-accounts | supplied or self-registered accounts (owner + low-priv) | strong |
 | 08-authz-logic | access control, IDOR/BOLA, logic, GraphQL authz | strong |
 | 09-injection | XSS/SQLi/SSRF/SSTI/redirect, AI-feature tests (detect-only) | strong |
 | 10-misconfig | CORS, headers, cache, disclosure, exposed services | flash |
+| 10b-skills | optional pass over your skill playbooks | strong |
 | 11-validate | re-prove with controls, set severity and CVSS | strong (max) |
 | 12-disprove | adversarial second pass -> confirmed or dropped | strong (max) |
 | 13-report | house-style drafts; you verify and submit | strong (max) |
-| 14-skills | optional pass over your skill playbooks | strong |
+
+Every finding-producing phase (including the optional skills pass and
+dependency confusion) runs **before** validate/disprove/report, so anything
+they find is validated, disproved and reported - nothing is stranded after the
+report.
 
 Change any phase's model with `hunt models role <role> <profile:tier>` (roles:
 scanner, prober, mapper, discoverer, jsanalyst, misconfig, intel, accounts,
@@ -146,13 +153,46 @@ injection and access-control phases. The full method is in
 
 A standalone phase searches GitHub for secrets tied to the target - its org and
 its domain - using a dork set (`hunter/data/github_dorks.md`), with your
-`GITHUB_TOKEN`. It filters the usual junk (localhost / example / test) and
-**validates** a real secret with one minimal read-only call to its vendor (AWS
-STS, OpenAI, Anthropic, Stripe, Slack, GitHub, ...) before recording it as a
-finding; the secret value is masked, never stored. Vendors it may call are the
-`osint.validate_hosts` allowlist (extend it in settings); a secret for a vendor
-not on the list is recorded unvalidated for you to check. Built as its own phase
-so Google/Bing/other dorking can be added later.
+`GITHUB_TOKEN`. It filters the usual junk (localhost / example / test), then
+**classifies each real secret by who leaked it**, because that (not whether the
+key is live) decides whether it is reportable:
+
+- leaked from the company's **own org repo** -> finding;
+- leaked by a **company employee** and it is an **internal** asset -> finding;
+- leaked by a **customer / seller / integrator** (or an employee's own tenant
+  key, or anyone whose link to the company is unproven) -> out-of-scope lead.
+
+Only finding-track secrets are **validated** with one minimal read-only call to
+their vendor (AWS STS, OpenAI, Anthropic, Stripe, Slack, GitHub, ...); the secret
+value is masked, never stored. A third-party/customer credential is recorded as
+a masked lead and never validated (that would be touching someone else's
+account). Vendors it may call are the `osint.validate_hosts` allowlist. Built as
+its own phase so Google/Bing/other dorking can be added later.
+
+## Dependency confusion (supply chain)
+
+A standalone phase (`06b-depconf`) hunts dependency confusion - a high-impact,
+widely overlooked bug. It collects the target's internal package names from its
+own JavaScript (harvested in `06-js`) and, with a `GITHUB_TOKEN`, from the org's
+repo manifests (`package.json`/`.npmrc`, `requirements.txt`/`setup.py`/
+`pyproject.toml`, `Gemfile`), then cross-references each name against the public
+registry (npm / PyPI / RubyGems). A name the target depends on that is
+**unclaimed** publicly - or whose public scope is unclaimed - is a candidate: if
+a build resolves the public registry, an attacker-published package of that name
+(higher version) runs on the build/dev host (RCE). High-confidence candidates
+are recorded as `dependency-confusion` findings with the operator's two-stage
+publish+callback PoC (callback -> your OOB host) baked into the steps; weaker
+ones become leads. The method is in `hunter/data/depconf_playbook.md` (read via
+`hk depconf`).
+
+The system does only the safe half - discover, cross-reference, prove the name
+is unclaimed, record, notify. **It never publishes a package:** that is the
+exploit step, with a real side effect on the public registry and the target's
+builds, so the command checker blocks `npm publish` / `twine upload` /
+`gem push` / `npm adduser` / `cargo publish`. You publish the placeholder and
+the callback payload by hand, attribute the callback IP (ARIN/RDAP: ignore
+cloud/scanner ranges, trust the target's ASN/ISP), and release the name
+afterward.
 
 ## How safety is enforced (not left to the model)
 
@@ -161,7 +201,9 @@ so Google/Bing/other dorking can be added later.
    API bypass it (they are not targets).
 2. **Command checker** (a PreToolUse hook): reads each command before it runs
    and blocks out-of-scope hosts, anything that disables the proxy, port
-   scanners (use `hk portscan`), brute forcing, and the run's own controls.
+   scanners (use `hk portscan`), brute forcing, publishing a package to a public
+   registry (the dependency-confusion exploit step - operator-only), and the
+   run's own controls.
 3. **Orchestrator:** owns phase order, the rate limit, state, resume and
    completion. Findings only become report drafts after the validate and
    disprove phases both pass them.
@@ -181,9 +223,27 @@ rules allow:
 - **Blind XSS:** beacons pointing at your collector, sprayed into input fields,
   parameters and headers (including User-Agent) wherever the agent submits
   input. A callback to your collector is the proof; you watch the collector.
+- **Headless browser (`hbrowse`):** a real Chromium that runs *through the scope
+  proxy* (so every request it makes is scope-checked, rate-limited, logged and
+  uses the residential egress if one is set), for what curl cannot show - DOM /
+  client-side XSS, open redirects that land, postMessage and window.name PoCs,
+  and authenticated or stored-XSS flows (pass a session cookie). It prints JSON
+  (final URL, status, fired JS dialogs = XSS proof, console, OOB callbacks) and
+  refuses to run un-proxied. Toggle with the `browser.enabled` setting; installed
+  by `install.sh` and reported by `hunt doctor`.
 
 These hosts are not targets: the command checker and proxy allow them while
 still blocking everything out of scope. Configure with `hunt oob`.
+
+### Residential egress
+
+Some targets block datacenter IPs at the edge (Akamai 403) or by IP-class rules,
+so the whole surface looks closed from the VPS. `hunt egress <url>` routes
+**target traffic** out through a residential/upstream HTTP proxy (a provider
+endpoint, or your home connection via an SSH tunnel) so the target sees a
+residential IP. Only target egress changes - the scope guard, rate limit and
+logging still apply, and OOB / model / passive-source hosts always go direct.
+`hunt egress off` returns to direct egress.
 
 ## Target types
 
