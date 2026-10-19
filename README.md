@@ -295,6 +295,7 @@ The scope model and the phases work for any program shape:
 | resolved-reports.txt | no | Disclosed reports from other researchers |
 | scope-overrides.txt | no | Your corrections: `in x`, `out y`, `header N: v` |
 | subdomains.txt, ips.txt | no | Seeds (never scope) |
+| an "AI automation" folder | no | A previous run's output (any of: `ai automation`, `ai-automation`, `old-system`, `prior`, ...). Mined for hosts/endpoints/leads/past findings as **reference only** - every agent is told to re-verify it from scratch and never trust its testing. |
 
 Output goes to `<target>/hunt-output/`: `state.db` (source of truth),
 `logs/`, `inputs/`, `run_summary.md`.

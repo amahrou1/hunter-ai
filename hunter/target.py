@@ -54,6 +54,15 @@ TEMPLATES: dict[str, str] = {
 # Inputs that define what may be touched: a change restarts the whole run.
 SCOPE_INPUTS = ("policy.txt", "scope-overrides.txt")
 
+# A folder dropped in the target directory holding a PREVIOUS automation's
+# output (the operator's old system). The run mines it for reference - hosts,
+# endpoints, leads, past findings - but never trusts its testing: everything is
+# re-verified from scratch. Matched case-insensitively.
+PRIOR_DIR_NAMES = (
+    "ai automation", "ai-automation", "ai_automation", "aiautomation",
+    "old-automation", "old-system", "previous-run", "prior-run", "prior",
+)
+
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
@@ -104,6 +113,17 @@ class Target:
     @property
     def scope_review(self) -> Path:
         return self.output / "scope_review.md"
+
+    def prior_dir(self) -> Path | None:
+        """A previous automation's output folder dropped in the target dir, if
+        present. Reference only - the run re-tests everything from scratch."""
+        if not self.path.is_dir():
+            return None
+        wanted = {n.lower() for n in PRIOR_DIR_NAMES}
+        for child in sorted(self.path.iterdir()):
+            if child.is_dir() and child.name != OUTPUT_DIR_NAME and child.name.lower() in wanted:
+                return child
+        return None
 
     def input_path(self, name: str) -> Path:
         return self.path / name

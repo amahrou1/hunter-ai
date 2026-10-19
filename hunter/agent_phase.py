@@ -70,7 +70,7 @@ read, and every write is scope-checked:
 Installed tools on your PATH (they already route through the proxy): subfinder,
 dnsx, httpx, katana, ffuf, plus curl, jq, python3, and the usual shell. Call
 them by name. For a port scan use `hk portscan`, never nmap/masscan.
-{infra}
+{infra}{prior}
 Work in this directory. Save tool output to files here and import it; do not
 paste large output back to yourself. Call `hk progress` as you go so the
 operator can see how far along you are.
@@ -84,10 +84,22 @@ not finish. Then reply DONE.
 """
 
 
+PRIOR_HELP = """
+== PRIOR AUTOMATION OUTPUT (reference only) ==
+A previous automation run left its results in {dir}. Use it as REFERENCE AND HINTS ONLY, never as truth:
+- Mine it for things that help THIS phase - known hosts/subdomains, endpoints, parameters, leads, past
+  findings - and pull the useful ones into the inventory with `hk` (add host / endpoint / lead). Everything
+  you add is scope-checked and will be re-verified by this run.
+- NEVER trust its testing. Treat any 'finding', 'confirmed' or 'vulnerable' in it as an UNVERIFIED lead to
+  reproduce from scratch. Do all testing yourself; a result is real only when THIS run proves it.
+- It can be large: grep/scan it selectively, do not cat huge files into your context.
+"""
+
 MAILBOX_HELP = """Temporary mailboxes (mail.tm) for sign-up, password-reset and OTP flows, and for making
 attacker/victim accounts for access-control testing. Use them ONLY when the program allows signing up
-with any email; if the policy requires a platform address (@intigriti.me / @bugcrowdninja.com), use that
-instead (see the scope rules and your researcher handle). Steps:
+with any email; if the policy requires a platform relay address (Intigriti @intigriti.me, Bugcrowd
+@bugcrowdninja.com, HackerOne <handle>@wearehackerone.com), use that instead (see the scope rules and your
+researcher handle). Steps:
   GET  https://api.mail.tm/domains                          (pick a domain)
   POST https://api.mail.tm/accounts   body {"address":"victim-<epoch>@<domain>","password":"TestPassword123!"}
   POST https://api.mail.tm/token      body {"address":"<email>","password":"TestPassword123!"}  -> bearer token
@@ -159,7 +171,8 @@ class AgentPhase(Phase):
         self._write_settings(ctx, workdir)
         env = self._env(ctx, proxy, workdir)
         scope_summary = self._scope_summary(ctx)
-        prompt = PREAMBLE.format(scope_summary=scope_summary, infra=self._infra(ctx), task=self.task(ctx))
+        prompt = PREAMBLE.format(scope_summary=scope_summary, infra=self._infra(ctx),
+                                 prior=self._prior(ctx), task=self.task(ctx))
         agent_cfg = ctx.settings.get("agent", {})
         minutes = float(agent_cfg.get("phase_minutes", {}).get(self.id, self.timeout_minutes))
         turns = int(agent_cfg.get("phase_turns", {}).get(self.id, self.max_turns))
@@ -188,6 +201,9 @@ class AgentPhase(Phase):
         bindir = str(paths.REPO_DIR / "bin")
         env["PATH"] = os.pathsep.join(p for p in (bindir, tools, env.get("PATH", "")) if p)
         env["HUNTER_TARGET_DIR"] = str(ctx.target.path)
+        prior = ctx.target.prior_dir()
+        if prior:
+            env["HUNTER_PRIOR_DIR"] = str(prior)
         env["HUNTER_PHASE"] = self.id
         env["HUNTER_SCOPE_FILE"] = str(ctx.target.scope_file)
         env["HUNTER_PROTECTED"] = os.pathsep.join(str(p) for p in (
@@ -238,6 +254,12 @@ class AgentPhase(Phase):
         claude_dir = workdir / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
         (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+    def _prior(self, ctx: Context) -> str:
+        """Reference block pointing the agent at a previous automation's output
+        (if the operator dropped one in the target folder). Empty otherwise."""
+        prior = ctx.target.prior_dir()
+        return PRIOR_HELP.format(dir=prior) if prior else ""
 
     def _infra(self, ctx: Context) -> str:
         """Your own testing infrastructure, offered to the agent and gated on the
