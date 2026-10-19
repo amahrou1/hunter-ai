@@ -32,7 +32,10 @@ class DepConfusionPhase(AgentPhase):
     name = "Dependency confusion: internal package discovery"
     version = "1.0"
     build_step = 6
-    requires = ("00-intake", "06-js")
+    # Depends on 04-map (JS/endpoints harvested there), not 06-js: it still runs
+    # after 06-js in the pipeline and uses its output when present, but a flaky
+    # 06-js left PARTIAL must not block it.
+    requires = ("00-intake", "04-map")
     role = "intel"
     max_turns = 120
     timeout_minutes = 120
