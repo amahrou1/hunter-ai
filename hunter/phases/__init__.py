@@ -16,6 +16,7 @@ from .ai_probe import AIProbePhase
 from .ai_map import AIMapPhase
 from .ai_discover import AIDiscoverPhase
 from .ai_js import AIJsPhase
+from .ai_depconf import DepConfusionPhase
 from .ai_accounts import AIAccountsPhase
 from .ai_authz import AIAuthzPhase
 from .ai_injection import AIInjectionPhase
@@ -36,6 +37,10 @@ def all_phases() -> list[Phase]:
         AIMapPhase(),
         AIDiscoverPhase(),
         AIJsPhase(),
+        # Dependency confusion: internal package names from the harvested JS (+
+        # the org repos) cross-referenced against public registries. Runs before
+        # validation so its candidates are validated, disproved and reported.
+        DepConfusionPhase(),
         AIAccountsPhase(),
         AIAuthzPhase(),
         AIInjectionPhase(),

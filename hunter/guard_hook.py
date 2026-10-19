@@ -40,8 +40,8 @@ PASSIVE_HOSTS = (
     "api.hackertarget.com", "urlscan.io", "dns.google", "cloudflare-dns.com", "rdap.org",
     "github.com", "api.github.com", "raw.githubusercontent.com", "gist.githubusercontent.com",
     "codeload.github.com", "objects.githubusercontent.com", "pypi.org", "files.pythonhosted.org",
-    "registry.npmjs.org", "nvd.nist.gov", "services.nvd.nist.gov", "cve.mitre.org", "osv.dev",
-    "api.osv.dev", "cve.circl.lu", "www.exploit-db.com",
+    "registry.npmjs.org", "rubygems.org", "api.rubygems.org", "nvd.nist.gov", "services.nvd.nist.gov",
+    "cve.mitre.org", "osv.dev", "api.osv.dev", "cve.circl.lu", "www.exploit-db.com",
 )
 MODEL_HOSTS = ("api.z.ai", "open.bigmodel.cn", "api.deepseek.com", "api.anthropic.com",
                "api.mail.tm", "mail.tm", "discord.com")
@@ -71,6 +71,22 @@ CONTROL = [
     (re.compile(r"\b(?:pkill|killall)\b|\bkill\s+-?\w*\s*\$\(|mitmdump"), "processes of the run must not be stopped"),
     (re.compile(r"\bsudo\b|\bsu\s+-"), "no root access"),
     (re.compile(r"\brm\s+-[a-z]*r[a-z]*f?\s+(?:/|~|\$HOME)(?:\s|$)"), "that would delete far too much"),
+]
+# Publishing a package to a public registry is the dependency-confusion EXPLOIT
+# step, with a real side effect on the public registry and on the target's
+# builds. It must be done by the operator by hand after review, never by the
+# run - the phase only discovers and validates that a name is unclaimed.
+PUBLISH = [
+    (re.compile(r"\b(?:npm|pnpm|yarn)\s+publish\b"),
+     "publishing an npm package is the exploit step for dependency confusion; the operator does it by hand"),
+    (re.compile(r"\bnpm\s+(?:adduser|login|unpublish|deprecate|owner)\b"),
+     "npm registry auth/publish actions are for the operator, not the run"),
+    (re.compile(r"\btwine\s+upload\b|\b(?:poetry|flit|hatch)\s+publish\b"),
+     "publishing to PyPI is the exploit step for dependency confusion; the operator does it by hand"),
+    (re.compile(r"\bgem\s+push\b"),
+     "publishing a gem is the exploit step for dependency confusion; the operator does it by hand"),
+    (re.compile(r"\bcargo\s+publish\b"),
+     "publishing a crate is the exploit step for dependency confusion; the operator does it by hand"),
 ]
 _URL_RE = re.compile(r"\b(?:https?|wss?|ftp)://[^\s'\"<>`|;)]+", re.I)
 _IP_RE = re.compile(r"(?<![\w.:/-])(\d{1,3}(?:\.\d{1,3}){3})(?:/\d{1,2})?(?![\w.])")
@@ -134,7 +150,7 @@ def check_command(command: str, scope: sc.Scope | None, protected: list[str], ex
     for word in BRUTE:
         if re.search(rf"(?<![\w/.-]){re.escape(word)}(?![\w-])", text):
             raise Verdict(f"{word}: brute forcing logins is never allowed in this run.")
-    for pattern, reason in (*PROXY_BYPASS, *CONTROL):
+    for pattern, reason in (*PROXY_BYPASS, *CONTROL, *PUBLISH):
         if pattern.search(text):
             raise Verdict(reason)
     for path in protected:

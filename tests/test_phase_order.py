@@ -14,8 +14,10 @@ def test_testing_phases_precede_validation_tail():
     # The tail that turns candidates into reports, in order.
     assert at("11-validate") < at("12-disprove") < at("13-report")
     # Every phase that can open a finding runs before validation.
-    for testing in ("08-authz-logic", "09-injection", "10-misconfig", "10b-skills"):
+    for testing in ("06b-depconf", "08-authz-logic", "09-injection", "10-misconfig", "10b-skills"):
         assert at(testing) < at("11-validate"), f"{testing} must run before validation"
+    # Dependency confusion needs the harvested JS, so it runs after the js phase.
+    assert at("06-js") < at("06b-depconf")
     # The optional skills pass is a testing phase, not a post-report step.
     assert at("10-misconfig") < at("10b-skills") < at("11-validate")
     # Report is still the final phase of the run.

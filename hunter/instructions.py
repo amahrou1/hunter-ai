@@ -58,12 +58,14 @@ COMMANDS = ("add", "focus", "unfocus", "avoid", "unavoid", "skip", "unskip", "no
 
 PHASE_WORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("01-intel", ("intel", "intelligence", "past reports", "disclosed reports")),
+    ("01b-dork-github", ("dork", "dorking", "github dork", "github dorking", "leaked secrets")),
     ("02-recon", ("recon", "subdomain enumeration", "subfinder")),
     ("03-probe", ("probe", "probing", "httpx", "fingerprinting")),
     ("04-map", ("map", "mapping", "crawl", "crawling", "crawler", "spider")),
     ("05-discover", ("discover", "discovery", "fuzz", "fuzzing", "directory", "directories",
                      "content discovery", "brute force", "bruteforce")),
     ("06-js", ("js", "javascript")),
+    ("06b-depconf", ("depconf", "dependency confusion", "dependency-confusion", "supply chain", "packages")),
     ("07-accounts", ("accounts", "account creation", "registration", "signup", "sign up", "sign-up")),
     ("08-authz-logic", ("authz", "access control", "idor", "bola", "business logic", "logic")),
     ("09-injection", ("injection", "injections", "xss", "sqli", "sql injection", "ssti", "ssrf")),
@@ -89,7 +91,7 @@ _ADD = ("add", "include", "new host", "new subdomain", "seed", "also test", "fou
 _URL_RE = re.compile(r"https?://[^\s'\"<>]+", re.I)
 _CIDR_RE = re.compile(r"(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}(?![\d.])")
 _IP_RE = re.compile(r"(?<![\d./])\d{1,3}(?:\.\d{1,3}){3}(?![\d./])")
-_PHASE_ID_RE = re.compile(r"\b(\d{2})-[a-z-]+\b")
+_PHASE_ID_RE = re.compile(r"\b(\d{2}[a-z]?-[a-z][a-z-]*)\b")
 _PHASE_NUM_RE = re.compile(r"\bphase\s*(\d{1,2})\b")
 
 
@@ -141,7 +143,10 @@ def extract_phases(text: str) -> list[str]:
     lower = _URL_RE.sub(" ", lower)
     lower = re.sub(r"\S+\.\S+", " ", lower)
     known = [pid for pid, _ in PHASE_WORDS] + list(PROTECTED)
-    by_number = {pid[:2]: pid for pid in known}
+    known_ids = set(known)
+    # "phase 6" means the plainly-numbered phase (06-js), never a sub-phase such
+    # as 06b-depconf; sub-phases are named by their full id or by a word.
+    by_number = {pid[:2]: pid for pid in known if pid[2:3] == "-"}
     found: list[str] = []
 
     def keep(pid: str) -> None:
@@ -149,8 +154,11 @@ def extract_phases(text: str) -> list[str]:
             found.append(pid)
 
     for match in _PHASE_ID_RE.finditer(lower):
-        if match.group(1) in by_number:
-            keep(by_number[match.group(1)])
+        tok = match.group(1)
+        if tok in known_ids:                       # full id, incl. 06b-depconf
+            keep(tok)
+        elif tok[2:3] == "-" and tok[:2] in by_number:   # plain-numbered id
+            keep(by_number[tok[:2]])
     for match in _PHASE_NUM_RE.finditer(lower):
         if match.group(1).zfill(2) in by_number:
             keep(by_number[match.group(1).zfill(2)])

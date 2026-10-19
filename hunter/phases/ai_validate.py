@@ -38,6 +38,12 @@ class AIValidatePhase(AgentPhase):
             "tighten the steps to a clean copy-paste sequence. Then `hk finding set <id> --status validated "
             "--severity <s> --cvss \"<vector>\" --steps \"...\" --impact \"...\" --evidence \"control vs "
             "vulnerable: ...\"`.\n"
+            "Dependency-confusion candidates (kind=dependency-confusion) validate differently: their proof is "
+            "that the package name is STILL unclaimed on the public registry - re-run the one registry GET "
+            "(`hk depconf` has the URLs). If still unclaimed, set it validated and KEEP the operator's "
+            "publish+callback PoC in the steps; do NOT publish anything, and do NOT drop it for lacking a live "
+            "callback (publishing is the operator's manual step). Disprove it only if the name is now claimed "
+            "by the target or a legitimate owner.\n"
             "Stay within scope and the rules; keep proofs minimal and non-destructive. Summarise which "
             "findings passed and which were dropped in ./handoff.md."
         )
