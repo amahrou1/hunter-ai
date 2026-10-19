@@ -17,21 +17,29 @@ class AIJsPhase(AgentPhase):
     build_step = 5
     requires = ("00-intake", "04-map")
     role = "jsanalyst"
-    max_turns = 80
+    max_turns = 150
     timeout_minutes = 120
 
     def task(self, ctx: Context) -> str:
         return (
-            "Read the JavaScript for hidden endpoints and secrets.\n"
-            "1. `hk endpoints --source js` and `hk endpoints` for the .js URLs found while crawling. "
-            "Download the in-scope ones through the proxy (curl) into files.\n"
-            "2. Extract endpoints and parameters, focusing on high-signal sources: fetch()/axios calls, "
-            "XMLHttpRequest, URLSearchParams, route tables, and GraphQL operation names and variables. "
-            "Add in-scope ones with `hk add endpoint GET <url>` (or the right method).\n"
-            "3. Look for leaked secrets: API keys, tokens, cloud keys, private keys, internal URLs. If you "
-            "find one, record it with `hk add lead secret-in-js <js-url> --evidence \"<which kind of key, "
-            "NOT the value>\"` - never write the secret value anywhere.\n"
-            "4. Note any interesting feature the JS reveals (admin routes, feature flags, AI/LLM endpoints, "
-            "GraphQL schema) for the testing phases.\n"
-            "Summarise the new endpoints and any secrets (by kind) in ./handoff.md."
+            "Read the target's JavaScript for hidden endpoints and secrets. There can be a LOT of files, so "
+            "work RESUMABLY and make forward progress every run - do not restart from the top each time.\n"
+            "1. Build the queue: `hk endpoints --source js` and `hk endpoints` for the .js URLs found while "
+            "crawling. Keep a file ./done.txt in this directory listing JS URLs you have already analysed. On "
+            "every run, SKIP any URL already in ./done.txt and reuse any file you already downloaded here. "
+            "Process the rest HIGHEST VALUE FIRST: login/auth, main/app/vendor bundles, admin, and the most "
+            "sensitive hosts.\n"
+            "2. For each file: download it in-scope through the proxy (curl) if it is not already local, then "
+            "extract endpoints and parameters from high-signal sources (fetch()/axios, XMLHttpRequest, "
+            "URLSearchParams, route tables, GraphQL operation names and variables) and add in-scope ones with "
+            "`hk add endpoint GET <url>` (or the right method). Then append that file's URL to ./done.txt so "
+            "the next run does not repeat it.\n"
+            "3. Secrets: API keys, tokens, cloud/private keys, internal URLs -> `hk add lead secret-in-js "
+            "<js-url> --evidence \"<which kind of key, NOT the value>\"`. Never write a secret value anywhere.\n"
+            "4. Note interesting features (admin routes, feature flags, AI/LLM endpoints, GraphQL schema) for "
+            "the testing phases, and call `hk progress \"js files\" <done> <total> files` as you go.\n"
+            "Write ./handoff.md ONLY when the queue is fully drained (every in-scope JS URL is in ./done.txt) "
+            "- that is what marks this phase complete. If you are running low on turns before then, stop "
+            "cleanly WITHOUT writing handoff.md; your ./done.txt progress is saved and the next run continues "
+            "where you left off. Put the new endpoints and the secrets (by kind) in that final handoff."
         )
