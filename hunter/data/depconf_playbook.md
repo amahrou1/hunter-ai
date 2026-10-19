@@ -42,6 +42,8 @@ the matching public registry (or whose public scope is unclaimed).**
 - npm (default for JS): bare `name` or scoped `@scope/name`.
 - pip: PEP 503 normalises names (lowercase, `-`/`_`/`.` collapse to `-`).
 - gem: exact name.
+- composer (PHP, `composer.json` `require`): `vendor/package`; check the whole
+  `vendor` too (an unclaimed vendor namespace is the strong case).
 
 ## 3. Cross-reference the PUBLIC registry (read-only GET, the key test)
 For each candidate, one GET decides it. 404 = unclaimed (candidate). 200 =
@@ -54,6 +56,7 @@ public owner is clearly unrelated and the target pins a higher internal version.
          an **unclaimed scope** means every `@acme/x` is claimable - strong.
 - pip:   `curl -s -o /dev/null -w "%{http_code}" https://pypi.org/pypi/<name>/json`
 - gem:   `curl -s -o /dev/null -w "%{http_code}" https://rubygems.org/api/v1/gems/<name>.json`
+- composer: `curl -s -o /dev/null -w "%{http_code}" https://repo.packagist.org/p2/<vendor>/<package>.json`
 
 ## 4. Filter to high confidence (avoid noise)
 Keep a candidate only when ALL hold:

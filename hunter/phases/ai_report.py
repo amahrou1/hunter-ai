@@ -27,8 +27,8 @@ class AIReportPhase(AgentPhase):
             "Write a submission-ready draft for every CONFIRMED finding. Drafts only - the researcher "
             "submits them by hand.\n"
             "`hk finding list --status confirmed`, and `hk finding show <id>` for each.\n"
-            "Write one Markdown file per finding into a ./reports/ folder in the target output "
-            "(reports/<id>-<short-slug>.md). House style, follow it exactly:\n"
+            "Write one Markdown file per finding into a ./reports/ folder in your CURRENT WORKING DIRECTORY "
+            "(./reports/<id>-<short-slug>.md); create the folder. House style, follow it exactly:\n"
             "- Plain English, short sentences, human-sounding. No em dashes. No AI-style formatting or filler.\n"
             "- Structure: clear title; summary (intended behaviour vs the issue); steps to reproduce as "
             "copy-paste, BOTH a browser/Burp version and a curl version; real business/user impact as one "
@@ -43,8 +43,17 @@ class AIReportPhase(AgentPhase):
         )
 
     def check(self, ctx: Context, store: A.Assets) -> PhaseResult:
-        reports = ctx.target.output / "reports"
-        n = len(list(reports.glob("*.md"))) if reports.is_dir() else 0
+        # The agent writes drafts to ./reports in its work dir; publish them to
+        # hunt-output/reports/ so the operator and `hunt findings` can see them
+        # (same pattern as the handoff).
+        out = ctx.target.output / "reports"
+        work_reports = self._workdir(ctx) / "reports"
+        if work_reports.is_dir():
+            out.mkdir(parents=True, exist_ok=True)
+            for src in work_reports.glob("*.md"):
+                (out / src.name).write_text(src.read_text(encoding="utf-8", errors="replace"),
+                                            encoding="utf-8")
+        n = len(list(out.glob("*.md"))) if out.is_dir() else 0
         confirmed = len(store.findings("confirmed")) + len(store.findings("reported"))
         if not self.outputs_present(ctx):
             return PhaseResult(st.PARTIAL, f"{n} draft(s) written; agent did not finish")

@@ -145,7 +145,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "otx.alienvault.com", "api.hackertarget.com", "rapiddns.io", "dns.bufferover.run",
             "urlscan.io", "dns.google", "cloudflare-dns.com", "github.com", "api.github.com",
             "raw.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org",
-            "rubygems.org", "api.rubygems.org",
+            "rubygems.org", "api.rubygems.org", "packagist.org", "repo.packagist.org",
             "services.nvd.nist.gov", "osv.dev", "api.osv.dev",
         ],
     },

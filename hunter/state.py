@@ -120,6 +120,15 @@ class State:
             (phase_id, name, PENDING))
         self.db.execute("UPDATE phases SET name=? WHERE phase_id=?", (name, phase_id))
 
+    def prune_phases(self, keep_ids: list[str]) -> list[str]:
+        """Remove phase rows no longer in the pipeline (e.g. a phase that was
+        renamed), so a stale id does not linger forever as PENDING."""
+        keep = set(keep_ids)
+        stale = [r["phase_id"] for r in self.phases() if r["phase_id"] not in keep]
+        for pid in stale:
+            self.db.execute("DELETE FROM phases WHERE phase_id=?", (pid,))
+        return stale
+
     def phase(self, phase_id: str) -> sqlite3.Row | None:
         return self.db.execute("SELECT * FROM phases WHERE phase_id=?", (phase_id,)).fetchone()
 

@@ -40,8 +40,9 @@ PASSIVE_HOSTS = (
     "api.hackertarget.com", "urlscan.io", "dns.google", "cloudflare-dns.com", "rdap.org",
     "github.com", "api.github.com", "raw.githubusercontent.com", "gist.githubusercontent.com",
     "codeload.github.com", "objects.githubusercontent.com", "pypi.org", "files.pythonhosted.org",
-    "registry.npmjs.org", "rubygems.org", "api.rubygems.org", "nvd.nist.gov", "services.nvd.nist.gov",
-    "cve.mitre.org", "osv.dev", "api.osv.dev", "cve.circl.lu", "www.exploit-db.com",
+    "registry.npmjs.org", "rubygems.org", "api.rubygems.org", "packagist.org", "repo.packagist.org",
+    "nvd.nist.gov", "services.nvd.nist.gov", "cve.mitre.org", "osv.dev", "api.osv.dev",
+    "cve.circl.lu", "www.exploit-db.com",
 )
 MODEL_HOSTS = ("api.z.ai", "open.bigmodel.cn", "api.deepseek.com", "api.anthropic.com",
                "api.mail.tm", "mail.tm", "discord.com")

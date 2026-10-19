@@ -136,6 +136,9 @@ class Orchestrator:
 
         for phase in self.phases:
             self.state.ensure_phase(phase.id, phase.name)
+        removed = self.state.prune_phases([p.id for p in self.phases])
+        if removed:
+            self._log(f"removed {len(removed)} phase(s) no longer in the pipeline: {', '.join(removed)}")
 
         current = self.target.fingerprints()
         stored_raw = self.state.get_meta("input_fingerprints")
