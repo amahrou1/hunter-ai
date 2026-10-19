@@ -126,6 +126,21 @@ the shared inventory (hosts, services, endpoints, leads, findings), imports
 tool output, runs the safe built-in checks (port scan, baselines, content
 checks, takeover), and reports progress. Every `hk` write is scope-checked.
 
+## Fuzzing (tech-aware)
+
+Content discovery (phase 05) is tuned per asset, not one list for everything.
+From each live service's fingerprint, `hk fuzzplan <service-id>` picks the
+wordlist(s) and the extensions for that stack (ASP.NET -> aspx/asmx/ashx/svc/
+config..., PHP -> php/phtml/inc..., Java -> jsp/do/action..., API -> json), using
+your own lists first. Point it at your lists with the `wordlists.dirs` setting
+(defaults to `~/myLists` then `~/SecLists`). The agent then follows interesting
+hits recursively but with judgement - reading each one for exposed dashboards,
+leaks, or WAFs rather than brute-forcing blindly - tries 403 bypasses (including
+ASP.NET cookieless tokens), and runs parameter discovery (arjun, or a params
+wordlist) on dynamic endpoints, recording the parameters as leads for the
+injection and access-control phases. The full method is in
+`hunter/data/fuzzing_playbook.md` (the agent reads it via `hk playbook`).
+
 ## How safety is enforced (not left to the model)
 
 1. **Scope proxy.** Every request to a target goes through it; out-of-scope

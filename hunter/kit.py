@@ -370,24 +370,17 @@ def cmd_takeover(kit: Kit, args) -> int:
     return 0
 
 
-def cmd_wordlist(kit: Kit, args) -> int:
-    default = paths.REPO_DIR / "hunter" / "data" / "discover.txt"
-    custom = config.load_settings().get("discover", {}).get("wordlist")
-    print(custom if custom and Path(custom).expanduser().is_file() else default)
-    return 0
-
-
 def cmd_finding(kit: Kit, args) -> int:
     from .review import mask
     store = kit.store
     if args.action == "add":
         if not args.title:
-            print("finding add needs --title"); return 1
+            print("finding add needs --title")
+            return 1
         fid = store.add_finding(kit.phase, args.title, kind=args.kind, severity=args.severity,
                                 url=args.url, host=(args.host or ""), summary=mask(args.summary or ""),
                                 steps=mask(args.steps or ""), impact=mask(args.impact or ""),
-                                cvss=args.cvss, evidence=mask(args.evidence or ""),
-                                status="candidate")
+                                cvss=args.cvss, evidence=mask(args.evidence or ""), status="candidate")
         print(json.dumps({"finding_id": fid}))
     elif args.action == "set":
         fields = {k: getattr(args, k) for k in ("title", "kind", "severity", "status", "host", "url",
@@ -401,11 +394,65 @@ def cmd_finding(kit: Kit, args) -> int:
     elif args.action == "show":
         row = store.finding(int(args.id))
         print(json.dumps(dict(row) if row else {}, indent=1, default=str))
-    else:  # list
+    else:
         rows = store.findings(args.status)
         text = "\n".join(f"{r['id']:>4} [{r['status']}] {r['severity'] or '-':<8} {r['kind'] or '-':<12} "
                          f"{r['title']}  {r['url'] or ''}" for r in rows)
         _print([dict(r) for r in rows], args.json, text)
+    return 0
+
+
+def cmd_wordlist(kit: Kit, args) -> int:
+    from . import fuzzing
+    settings = config.load_settings()
+    if args.list:
+        import os
+        seen = set()
+        for base in fuzzing.dirs_from(settings):
+            if base.is_dir():
+                files = sorted(f.name for f in base.iterdir() if f.is_file())
+                if files:
+                    print(f"{base}:")
+                    for f in files:
+                        if f not in seen:
+                            print(f"  {f}")
+                            seen.add(f)
+        return 0
+    if args.extensions:
+        print(fuzzing.EXTENSIONS.get(args.extensions, fuzzing.EXTENSIONS["general"]))
+        return 0
+    if args.kind:
+        path = fuzzing.resolve(args.kind, settings)
+        print(path or fuzzing.general(settings))
+        return 0
+    print(fuzzing.general(settings))
+    return 0
+
+
+def cmd_fuzzplan(kit: Kit, args) -> int:
+    """What to fuzz a given live service with: profile, wordlists, extensions,
+    and the params wordlist - chosen from its fingerprint."""
+    from . import fuzzing
+    settings = config.load_settings()
+    svc = kit.state.db.execute("SELECT * FROM services WHERE id=?", (int(args.service_id),)).fetchone()
+    if not svc:
+        print(json.dumps({"error": f"no service #{args.service_id} (see hk services)"}))
+        return 1
+    tech = ""
+    try:
+        tech = " ".join(json.loads(svc["tech"])) if svc["tech"] else ""
+    except ValueError:
+        tech = svc["tech"] or ""
+    plan = fuzzing.plan(settings, server=svc["server"] or "", tech=tech, host=svc["host"],
+                        content_type=svc["content_type"] or "")
+    plan["service"] = {"id": svc["id"], "url": svc["url"], "server": svc["server"], "tech": tech}
+    print(json.dumps(plan, indent=1))
+    return 0
+
+
+def cmd_playbook(kit: Kit, args) -> int:
+    from . import paths
+    print(paths.REPO_DIR / "hunter" / "data" / "fuzzing_playbook.md")
     return 0
 
 
@@ -465,7 +512,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("baseline").set_defaults(func=cmd_baseline)
     a = sub.add_parser("check-content"); a.add_argument("url"); a.set_defaults(func=cmd_check_content)
     sub.add_parser("takeover").set_defaults(func=cmd_takeover)
-    sub.add_parser("wordlist").set_defaults(func=cmd_wordlist)
+    a = sub.add_parser("wordlist")
+    a.add_argument("--kind"); a.add_argument("--extensions"); a.add_argument("--list", action="store_true")
+    a.set_defaults(func=cmd_wordlist)
+    a = sub.add_parser("fuzzplan"); a.add_argument("service_id"); a.set_defaults(func=cmd_fuzzplan)
+    sub.add_parser("playbook").set_defaults(func=cmd_playbook)
     a = sub.add_parser("finding"); a.add_argument("action", choices=["add", "set", "list", "show"])
     a.add_argument("id", nargs="?"); a.add_argument("--title"); a.add_argument("--kind")
     a.add_argument("--severity", choices=["info", "low", "medium", "high", "critical"])

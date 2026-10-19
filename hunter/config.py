@@ -141,6 +141,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "services.nvd.nist.gov", "osv.dev", "api.osv.dev",
         ],
     },
+    # Where to find wordlists for fuzzing, searched in order. The agent picks
+    # the right list per asset from these (your own lists first, then SecLists).
+    "wordlists": {
+        "dirs": ["~/myLists", "~/SecLists/Discovery/Web-Content", "~/SecLists/Discovery/Web-Content/api"],
+    },
     # Your out-of-band testing infrastructure (not targets). The agent points
     # payloads at these and they are allowed through the command checker and the
     # proxy. Change with `hunt oob`.

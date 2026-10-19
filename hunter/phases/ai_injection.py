@@ -25,7 +25,8 @@ class AIInjectionPhase(AgentPhase):
     def task(self, ctx: Context) -> str:
         return (
             "Test the mapped parameters and inputs for injection and client-side flaws. Use the interesting "
-            "parameters from the crawl (`hk endpoints`) and any forms.\n"
+            "parameters from the crawl (`hk endpoints`), the parameter leads discovery recorded "
+            "(`hk leads` - kinds 'parameters' and injection candidates), and any forms.\n"
             "Cover: reflected/stored/DOM XSS, SQL and NoSQL injection, SSRF, SSTI, open redirect, CRLF/"
             "header and host-header injection. Where the app has AI/LLM features, also test prompt injection, "
             "system-prompt or tool-schema leakage, and authorization on AI-backed endpoints (REST and "

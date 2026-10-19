@@ -119,6 +119,13 @@ chmod 700 "$HOME/.config/hunter-ai"
 # --- 5. Recon tools (best effort) ---------------------------------------
 say "Installing the recon tools (subfinder, dnsx, naabu, httpx, katana, ffuf)"
 "$REPO_DIR/bin/hunt" tools install || say "Some recon tools did not install. Run later: hunt tools install"
+# Arjun for HTTP parameter discovery (best effort; the fuzzing phase falls back
+# to a params wordlist if it is missing).
+if "$VENV/bin/python" -m pip install --quiet arjun 2>/dev/null; then
+  ln -sf "$VENV/bin/arjun" "$HOME/.local/bin/arjun" 2>/dev/null || true
+else
+  say "arjun not installed (optional; parameter discovery falls back to a wordlist)."
+fi
 
 # --- 6. Self-check ------------------------------------------------------
 "$REPO_DIR/bin/hunt" version >/dev/null || fail "The hunt command does not start."
