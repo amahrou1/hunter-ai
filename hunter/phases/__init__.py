@@ -40,10 +40,12 @@ def all_phases() -> list[Phase]:
         AIAuthzPhase(),
         AIInjectionPhase(),
         AIMisconfigPhase(),
+        # Skills pass is a TESTING phase: it must run before validation so any
+        # finding/lead it produces is validated, disproved and reported.
+        AISkillsPhase(),
         AIValidatePhase(),
         AIDisprovePhase(),
         AIReportPhase(),
-        AISkillsPhase(),
     ]
 
 

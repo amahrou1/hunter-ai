@@ -1,9 +1,11 @@
-"""Phase 14, AI: optional skills pass.
+"""Phase 10b, AI: skills pass (a second look with the researcher's playbooks).
 
-A final second look using the researcher's own skill playbooks (the skills.md
-collection on the VPS). Re-checks the surface for anything the main phases
-missed, following those playbooks. Optional: it is skipped cleanly if no
-skills are installed."""
+Runs AFTER the main testing phases (06-js .. 10-misconfig) and BEFORE validation,
+so any finding or lead it produces still goes through 11-validate, 12-disprove
+and 13-report like every other testing phase. (It used to run dead last, after
+the report, so its findings were never validated or reported - fixed.) Re-checks
+the surface using the researcher's own skill playbooks (the skills collection on
+the VPS). Optional: skipped cleanly if no skills are installed."""
 
 from __future__ import annotations
 
@@ -15,11 +17,11 @@ from .base import Context, PhaseResult
 
 
 class AISkillsPhase(AgentPhase):
-    id = "14-skills"
+    id = "10b-skills"
     name = "Skills pass (optional second look)"
-    version = "2.0"
-    build_step = 9
-    requires = ("00-intake", "04-map")
+    version = "2.1"
+    build_step = 7
+    requires = ("00-intake", "04-map", "05-discover")
     role = "authz"
     max_turns = 120
     timeout_minutes = 180
