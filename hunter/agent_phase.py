@@ -123,6 +123,10 @@ class AgentPhase(Phase):
     role = "scanner"
     max_turns = 120
     timeout_minutes = 120
+    # Extra non-target hosts this phase may reach (merged into the command
+    # checker allowlist), and secrets to export into the agent env.
+    allow_hosts: tuple[str, ...] = ()
+    secret_env: dict[str, str] = {}
 
     def task(self, ctx: Context) -> str:  # pragma: no cover - interface
         raise NotImplementedError
@@ -196,8 +200,12 @@ class AgentPhase(Phase):
                     oob_hosts.append(host)
             if oob.get("temp_mail", True):
                 env["HUNTER_TEMP_MAIL"] = "1"
-        extra = list(ctx.settings.get("agent", {}).get("extra_hosts", [])) + oob_hosts
+        extra = list(ctx.settings.get("agent", {}).get("extra_hosts", [])) + oob_hosts + list(self.allow_hosts)
         env["HUNTER_EXTRA_HOSTS"] = ",".join(extra)
+        for secret_name, env_name in self.secret_env.items():
+            value = ctx.secrets.get(secret_name)
+            if value:
+                env[env_name] = value
         return env
 
     def _write_settings(self, ctx: Context, workdir: Path) -> None:

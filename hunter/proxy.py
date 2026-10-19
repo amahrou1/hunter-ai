@@ -44,9 +44,12 @@ def _oob_hosts(settings: dict) -> list[str]:
     blind-XSS collector). Not targets: reachable directly, past the guard."""
     from urllib.parse import urlsplit
     oob = settings.get("oob", {}) or {}
+    hosts: list[str] = []
+    osint = settings.get("osint", {}) or {}
+    if osint.get("enabled", True):
+        hosts += [str(h).lower() for h in osint.get("validate_hosts", [])]
     if not oob.get("enabled", True):
-        return []
-    hosts = []
+        return hosts
     if oob.get("callback_host"):
         hosts.append(str(oob["callback_host"]).lower())
     if oob.get("blind_xss_url"):

@@ -10,6 +10,7 @@ from __future__ import annotations
 from .base import Context, Phase, PhaseResult, PlannedPhase
 from .p00_intake import IntakePhase
 from .ai_intel import IntelPhase
+from .ai_dork import GithubDorkPhase
 from .ai_recon import AIReconPhase
 from .ai_probe import AIProbePhase
 from .ai_map import AIMapPhase
@@ -29,6 +30,7 @@ def all_phases() -> list[Phase]:
     return [
         IntakePhase(),
         IntelPhase(),
+        GithubDorkPhase(),
         AIReconPhase(),
         AIProbePhase(),
         AIMapPhase(),

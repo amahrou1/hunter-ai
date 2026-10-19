@@ -107,3 +107,52 @@ def test_phase_env_and_preamble_carry_oob_infra(env, make_target, settings_secre
     assert envd["HUNTER_OOB_HOST"] == "203.0.113.9" and envd["HUNTER_BLIND_XSS_URL"] == "https://xss.example/c/me"
     infra = phase._infra(ctx)
     assert "mail.tm" in infra and "203.0.113.9" in infra and "https://xss.example/c/me" in infra
+
+
+def test_github_dork_phase_blocks_without_token(env, make_target, settings_secrets, notifier):
+    from hunter.phases.ai_dork import GithubDorkPhase
+    from hunter.phases.base import Context
+    target = make_target("acme")
+    target.output.mkdir(parents=True, exist_ok=True)
+    sc.save(sc.Scope(in_scope=[sc.parse_asset("*.acme.test")], rules={"effective_rps": 5}), target.scope_file)
+    state = st.State(target.state_db)
+    ctx = Context(target, state, settings_secrets[0], {"GLM_API_KEY": "k"}, notifier)  # no GITHUB_TOKEN
+    ctx.phase_id = "01b-dork-github"
+    try:
+        result = GithubDorkPhase().run(ctx)
+    finally:
+        ctx.close()
+        state.close()
+    assert result.status == st.BLOCKED and "GitHub token" in result.summary
+
+
+def test_github_dork_phase_runs_with_token_and_records_secret(env, make_target, settings_secrets, notifier,
+                                                              monkeypatch):
+    from hunter.phases.ai_dork import GithubDorkPhase
+    from hunter.phases.base import Context
+    target = make_target("acme")
+    target.output.mkdir(parents=True, exist_ok=True)
+    sc.save(sc.Scope(in_scope=[sc.parse_asset("*.acme.test")], rules={"effective_rps": 5}), target.scope_file)
+    state = st.State(target.state_db)
+    secrets = {"GLM_API_KEY": "k", "GITHUB_TOKEN": "ghp_testtoken"}
+    # Fake agent: prove the token and vendor host are in its env, then record a finding.
+    script = ('test -n "$GITHUB_TOKEN" && echo "token ok" > env.txt; '
+              'echo "$HUNTER_EXTRA_HOSTS" >> env.txt; '
+              'hk finding add --title "AWS key leaked" --kind leaked-secret --severity high --url https://github.com/acme/x/blob/env '
+              '--summary "AWS key for acme leaked" --steps "validated via sts, masked ****ABCD" '
+              '--impact "full S3 access" > fid.txt 2>&1; '
+              'echo done > handoff.md')
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "script")
+    monkeypatch.setenv("FAKE_CLAUDE_SCRIPT", script)
+    ctx = Context(target, state, settings_secrets[0], secrets, notifier)
+    ctx.phase_id = "01b-dork-github"
+    try:
+        result = GithubDorkPhase().run(ctx)
+    finally:
+        ctx.close()
+    assert result.status == st.DONE
+    store = A.Assets(st.State(target.state_db).db)
+    secrets_found = [f for f in store.findings() if f["kind"] == "leaked-secret"]
+    assert len(secrets_found) == 1 and secrets_found[0]["severity"] == "high"
+    env_txt = (target.output / "phases" / "01b-dork-github" / "work" / "env.txt").read_text()
+    assert "token ok" in env_txt and "api.github.com" in env_txt and "api.openai.com" in env_txt

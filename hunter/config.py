@@ -146,6 +146,20 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "wordlists": {
         "dirs": ["~/myLists", "~/SecLists/Discovery/Web-Content", "~/SecLists/Discovery/Web-Content/api"],
     },
+    # OSINT / dorking: GitHub code search for leaked secrets tied to the target,
+    # then minimal validation of real ones. validate_hosts are vendor APIs a
+    # found key is checked against (not the target); add more as needed.
+    "osint": {
+        "enabled": True,
+        "validate_hosts": [
+            "api.github.com", "api.openai.com", "api.anthropic.com", "sts.amazonaws.com",
+            "slack.com", "api.slack.com", "hooks.slack.com", "api.stripe.com", "api.sendgrid.com",
+            "api.mailgun.net", "api.twilio.com", "api.telegram.org", "api.digitalocean.com",
+            "gitlab.com", "api.heroku.com", "www.googleapis.com", "oauth2.googleapis.com",
+            "api.shodan.io", "api.mapbox.com", "api.dropboxapi.com", "graph.microsoft.com",
+            "login.microsoftonline.com", "api.cloudflare.com", "api.pagerduty.com", "api.bitbucket.org",
+        ],
+    },
     # Your out-of-band testing infrastructure (not targets). The agent points
     # payloads at these and they are allowed through the command checker and the
     # proxy. Change with `hunt oob`.

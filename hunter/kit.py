@@ -456,6 +456,12 @@ def cmd_playbook(kit: Kit, args) -> int:
     return 0
 
 
+def cmd_dorks(kit: Kit, args) -> int:
+    from . import paths
+    print(paths.REPO_DIR / "hunter" / "data" / "github_dorks.md")
+    return 0
+
+
 def cmd_progress(kit: Kit, args) -> int:
     kit.state.set_progress(kit.phase, args.step, args.done, args.total, args.unit)
     return 0
@@ -517,6 +523,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(func=cmd_wordlist)
     a = sub.add_parser("fuzzplan"); a.add_argument("service_id"); a.set_defaults(func=cmd_fuzzplan)
     sub.add_parser("playbook").set_defaults(func=cmd_playbook)
+    sub.add_parser("dorks").set_defaults(func=cmd_dorks)
     a = sub.add_parser("finding"); a.add_argument("action", choices=["add", "set", "list", "show"])
     a.add_argument("id", nargs="?"); a.add_argument("--title"); a.add_argument("--kind")
     a.add_argument("--severity", choices=["info", "low", "medium", "high", "critical"])

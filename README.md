@@ -103,6 +103,7 @@ adapts, follows leads, and records what it finds.
 |---|---|---|
 | 00-intake | read policy, build scope, prove the guard | (policy reader) |
 | 01-intel | past and disclosed reports -> what to focus on | strong |
+| 01b-dork-github | GitHub dorking for leaked secrets, validated against the vendor | strong |
 | 02-recon | subdomains, DNS, takeover candidates | flash |
 | 03-probe | live services, fingerprints, baselines, IP-range port scan | flash |
 | 04-map | crawl, endpoints, parameters, JavaScript | flash |
@@ -140,6 +141,18 @@ ASP.NET cookieless tokens), and runs parameter discovery (arjun, or a params
 wordlist) on dynamic endpoints, recording the parameters as leads for the
 injection and access-control phases. The full method is in
 `hunter/data/fuzzing_playbook.md` (the agent reads it via `hk playbook`).
+
+## GitHub dorking (OSINT)
+
+A standalone phase searches GitHub for secrets tied to the target - its org and
+its domain - using a dork set (`hunter/data/github_dorks.md`), with your
+`GITHUB_TOKEN`. It filters the usual junk (localhost / example / test) and
+**validates** a real secret with one minimal read-only call to its vendor (AWS
+STS, OpenAI, Anthropic, Stripe, Slack, GitHub, ...) before recording it as a
+finding; the secret value is masked, never stored. Vendors it may call are the
+`osint.validate_hosts` allowlist (extend it in settings); a secret for a vendor
+not on the list is recorded unvalidated for you to check. Built as its own phase
+so Google/Bing/other dorking can be added later.
 
 ## How safety is enforced (not left to the model)
 
