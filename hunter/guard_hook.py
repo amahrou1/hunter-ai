@@ -45,6 +45,10 @@ PASSIVE_HOSTS = (
 )
 MODEL_HOSTS = ("api.z.ai", "open.bigmodel.cn", "api.deepseek.com", "api.anthropic.com",
                "api.mail.tm", "mail.tm", "discord.com")
+# Well-known public DNS resolvers: used for name resolution and latency checks,
+# never a target. Allowed so `dig @8.8.8.8` and friends work.
+PUBLIC_RESOLVERS = ("1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "149.112.112.112",
+                    "208.67.222.222", "208.67.220.220", "127.0.0.53")
 
 SCANNERS = ("nmap", "masscan", "zmap", "naabu", "rustscan", "hping3", "unicornscan", "zgrab", "zgrab2")
 BRUTE = ("hydra", "medusa", "ncrack", "patator", "crowbar", "thc-hydra", "kerbrute", "crackmapexec", "netexec")
@@ -85,6 +89,8 @@ def _host_ok(host: str, scope: sc.Scope | None, extra: tuple[str, ...]) -> str |
     if not host:
         return None
     if host in ("localhost",) or host.endswith(".localhost"):
+        return None
+    if host in PUBLIC_RESOLVERS:
         return None
     try:
         ip = ipaddress.ip_address(host)
@@ -198,11 +204,17 @@ def main() -> int:
         if tool == "Bash":
             check_command(str(data.get("command") or ""), scope, protected, extra)
         elif tool == "WebFetch":
+            # Reading the public web (write-ups, docs, disclosed reports) is
+            # allowed and does not touch the target. Only the target's own
+            # hosts are blocked here: fetch those with curl, which goes through
+            # the scope proxy (rate-limited, logged, correct headers).
             url = str(data.get("url") or "")
-            host = re.split(r"[/:?#]", url.split("://", 1)[-1], maxsplit=1)[0]
-            reason = _host_ok(host, scope, extra)
-            if reason:
-                raise Verdict(f"Blocked: {reason}.")
+            host = re.split(r"[/:?#]", url.split("://", 1)[-1], maxsplit=1)[0].split("@")[-1].lower()
+            roots = _roots(scope)
+            if host and (any(host == r or host.endswith("." + r) for r in roots)
+                         or (scope is not None and scope.decide(host).allowed)):
+                raise Verdict(f"Blocked: {host} is a target host; fetch it with curl so it goes through the "
+                              f"scope proxy, not WebFetch.")
     except Verdict as verdict:
         log = os.environ.get("HUNTER_HOOK_LOG")
         if log:

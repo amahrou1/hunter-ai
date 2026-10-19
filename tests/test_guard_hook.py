@@ -40,6 +40,8 @@ ALLOWED = [
     "hunt scope bol check https://x.bol.com/a",
     "sed -i 's/a/b/' NOTES.md",
     "curl -s http://127.0.0.1:8080/ && curl -s https://hdh-media.cn.sbx.bol.io/",
+    "dig +short @8.8.8.8 www.bol.com",
+    "dig @1.1.1.1 api.bol.com A",
 ]
 BLOCKED = [
     ("curl https://www.google.com/", "not in scope"),
@@ -49,7 +51,6 @@ BLOCKED = [
     ("env -u HTTPS_PROXY curl https://api.bol.com", "env -u"),
     ("nmap -p- 185.14.168.1", "hk portscan"),
     ("hydra -l admin -P pass.txt https-post-form://login.bol.com", "brute forcing"),
-    ("nc -v 8.8.8.8 443", "not in scope"),
     ("nc -v bol.com 443", "not in scope"),
     ("curl http://10.0.0.5/", "not in scope"),
     ("echo x > /t/hunt-output/scope.json", "belongs to the run"),
@@ -97,6 +98,10 @@ def test_hook_process_protocol(tmp_path, scope):
     assert ok.returncode == 0
     blocked = call("Bash", {"command": "curl -s https://www.google.com/"})
     assert blocked.returncode == 2 and "not in scope" in blocked.stderr
-    web = call("WebFetch", {"url": "https://evil.example.org/", "prompt": "x"})
-    assert web.returncode == 2
-    assert len((tmp_path / "hook.log").read_text().splitlines()) == 2
+    # WebFetch to a public site (a write-up) is allowed: it does not touch the target.
+    public = call("WebFetch", {"url": "https://medium.com/@x/bol-writeup", "prompt": "summarize"})
+    assert public.returncode == 0
+    # WebFetch to a target host is blocked (must go through curl + the proxy).
+    target_fetch = call("WebFetch", {"url": "https://www.bol.com/", "prompt": "x"})
+    assert target_fetch.returncode == 2 and "scope proxy" in target_fetch.stderr
+    assert len((tmp_path / "hook.log").read_text().splitlines()) == 2  # google + target fetch
