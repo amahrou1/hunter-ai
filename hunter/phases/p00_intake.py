@@ -28,7 +28,7 @@ WATCH = ["policy.txt", "scope-overrides.txt"]
 class IntakePhase(Phase):
     id = "00-intake"
     name = "Intake: inputs, policy and scope guard"
-    version = "1.1"
+    version = "1.2"
     build_step = 3
 
     def outputs_present(self, ctx: Context) -> bool:

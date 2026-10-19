@@ -53,6 +53,7 @@ class Asset:
     port: int | None = None   # url entries only
     scheme: str = ""          # url entries only
     wildcard_host: bool = False  # url entries like https://*.example.com/
+    suffix_match: bool = False   # glued wildcard like *us.tiktokv.com: match any host ending in `host`
 
     @property
     def is_network(self) -> bool:
@@ -165,7 +166,13 @@ def parse_asset(raw: str, kind: str | None = None) -> Asset:
     if lowered.startswith("."):
         return Asset(kind="wildcard", raw=raw.strip(), host=_check_host(normalize_host(lowered[1:]), raw))
     if "*" in lowered:
-        raise AssetError(f"'{raw}' uses a wildcard form that is not clear (only *.domain is accepted)")
+        # HackerOne-style glued wildcards: "*us.tiktokv.com", "*tiktokv.us".
+        # The star replaces a label prefix; read it as "any host ending in the
+        # text after the star". Only a single leading star is allowed.
+        if lowered.startswith("*") and lowered.count("*") == 1:
+            suffix = normalize_host(lowered[1:].lstrip("."))
+            return Asset(kind="wildcard", raw=raw.strip(), host=_check_host(suffix, raw), suffix_match=True)
+        raise AssetError(f"'{raw}' uses a wildcard form that is not clear (only *.domain or *label.domain)")
 
     host = normalize_host(lowered)
     return Asset(kind="domain", raw=raw.strip(), host=_check_host(host, raw))
@@ -181,6 +188,8 @@ def _fail(raw: str):
 
 def _host_matches(asset: Asset, host: str) -> bool:
     if asset.kind == "wildcard" or (asset.kind == "url" and asset.wildcard_host):
+        if asset.suffix_match:   # glued wildcard *X: the domain X itself and its subdomains
+            return host == asset.host or host.endswith("." + asset.host)
         return host.endswith("." + asset.host)
     if asset.kind in ("domain", "url"):
         return host == asset.host

@@ -67,12 +67,25 @@ Rules for reading:
 2. "type": wildcard for *.domain; domain for a single host; url when a path or
    port is given; ip / cidr for addresses; mobile for app store ids or package
    names; source_code for repositories; executable for desktop software.
+   Classify by the ASSET STRING itself, never by a "Type" column the platform
+   shows: "*.example.com" is a wildcard even if a table labels its type "Other",
+   "Domain", or leaves it blank.
 3. If the policy names a domain and says "and all subdomains", output two
    entries: the domain itself (type domain) and "*.domain" (type wildcard).
 4. Put an asset in out_of_scope if the policy says it is out of scope, not
    eligible, not part of the program, third party, or "do not test".
-5. If anything about an asset or a rule is unclear or contradictory, add it
-   to ambiguities. Do NOT put an unclear asset in in_scope.
+5. Scope is often split across several in-scope tables ("Tier 1", "Tier 2",
+   "In scope", "Eligible", ...): EVERY asset in any of them is in_scope, and a
+   bounty tier, "reduced bounty", or "max severity" note NEVER changes that. A
+   separate "Excluded Assets" / "Out of scope" / "Ineligible" table is
+   out_of_scope. Use "ambiguities" ONLY for an asset that truly cannot be read
+   or is genuinely self-contradictory (a malformed name; the same asset listed
+   as both in and out with no resolution). Do NOT mark an asset unclear just
+   because its type column is odd, its bounty tier varies, a note says to
+   cross-reference tables, or some specific subdomains under a wildcard are
+   separately excluded. Put a clearly-listed eligible wildcard like
+   "*.example.com" in in_scope and its excluded subdomains in out_of_scope - the
+   out-of-scope entries win automatically, so nothing is lost by including it.
 6. rate_limit.requests_per_second: convert to requests per second
    (for example 300 per minute = 5). Use the strictest limit if several are
    given. null if the policy gives no number.

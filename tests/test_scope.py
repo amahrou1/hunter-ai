@@ -19,13 +19,15 @@ from hunter.scope import Scope, parse_asset
     ("10.0.0.1", "ip", "10.0.0.1", "", None),
     ("10.0.0.0/24", "cidr", "10.0.0.0/24", "", None),
     ("shop.example.com (production)", "domain", "shop.example.com", "", None),
+    # Glued wildcard (HackerOne form): the domain itself and its subdomains.
+    ("*us.tiktokv.com", "wildcard", "us.tiktokv.com", "", None),
 ])
 def test_parse_asset(raw, kind, host, path, port):
     asset = parse_asset(raw)
     assert (asset.kind, asset.host, asset.path, asset.port) == (kind, host, path, port)
 
 
-@pytest.mark.parametrize("raw", ["example.*", "*example.com", "ftp://x.example.com", "not a host", "", "*.*.example.com"])
+@pytest.mark.parametrize("raw", ["example.*", "ftp://x.example.com", "not a host", "", "*.*.example.com"])
 def test_unclear_entries_rejected(raw):
     with pytest.raises(sc.AssetError):
         parse_asset(raw)
