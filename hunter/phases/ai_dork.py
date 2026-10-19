@@ -2,9 +2,18 @@
 
 Finds the target's GitHub org and repos, searches them (and the domain) for
 leaked credentials and API keys with a dork set, filters out the junk
-(localhost / example / test), and VALIDATES the real ones with a single minimal
-read-only call to the vendor before recording them as findings. Standalone, so
-Google/Bing/other dorking can be added here later.
+(localhost / example / test), then classifies each real secret by WHO leaked it
+- because that, not whether the key is live, decides if it is reportable:
+
+  - leaked from the company's own org repos          -> finding (their mistake)
+  - leaked by a company employee, and it is an        -> finding
+    internal/privileged company asset
+  - leaked by a customer / seller / integrator, or    -> lead, out of scope
+    by an employee but it is only their own tenant key
+
+Only finding-track secrets are validated, with a single minimal read-only call
+to the vendor; third-party credentials are recorded masked and never touched.
+Standalone, so Google/Bing/other dorking can be added here later.
 
 Network: GitHub and the vendor validation hosts are reachable (they are not the
 bug-bounty target). The target's own hosts still go through the scope proxy.
@@ -28,7 +37,7 @@ def _validate_hosts(settings: dict) -> tuple[str, ...]:
 class GithubDorkPhase(AgentPhase):
     id = "01b-dork-github"
     name = "OSINT: GitHub dorking and secret validation"
-    version = "1.0"
+    version = "1.1"
     build_step = 5
     requires = ("00-intake",)
     role = "intel"
@@ -52,31 +61,65 @@ class GithubDorkPhase(AgentPhase):
     def task(self, ctx: Context) -> str:
         hosts = ", ".join(_validate_hosts(ctx.settings)) or "(none configured)"
         return (
-            "Hunt for leaked secrets tied to this target on GitHub, and validate the real ones. First read "
-            "the dork playbook: `cat $(hk dorks)`. Your GitHub token is in $GITHUB_TOKEN.\n"
-            "1. Identify the target: the in-scope domain(s) from `hk scope`, and find the GitHub org via the "
-            "users/orgs search API. Use both org: and the bare domain in queries.\n"
+            "Hunt for leaked secrets tied to this target on GitHub, classify each by WHO leaked it, and "
+            "validate only the reportable ones. First read the dork playbook: `cat $(hk dorks)`. Your "
+            "GitHub token is in $GITHUB_TOKEN.\n"
+            "1. Identify the target: the in-scope domain(s) from `hk scope`, and find the official GitHub "
+            "org(s) via the users/orgs search API. Note the org login(s) - you need them to tell a company "
+            "repo from a stranger's. Use both org: and the bare domain in queries.\n"
             "2. Run the dork queries from the playbook against the GitHub code-search API (authenticated, "
-            "paced for its rate limit). For each hit, fetch the file's raw content and read the secret in "
-            "context.\n"
-            "3. Filter the junk: discard hits that are localhost/example/test/sample/demo/placeholder, "
-            "example or tutorial repos, documented sample keys, admin/admin in a fixtures file, etc. Keep "
-            "only real-looking secrets tied to the target (its org, domain, or infra).\n"
-            "4. VALIDATE each real secret with ONE minimal read-only call to its vendor - only to prove it is "
-            f"live, never to read or change data. You may reach these vendor hosts for validation: {hosts}. "
-            "If a secret's vendor is NOT in that list, record it as a finding marked UNVALIDATED (do not hit "
-            "an arbitrary host). The target's own API keys are validated through the scope proxy as usual.\n"
-            "5. Record every live secret: `hk finding add --kind leaked-secret --severity <by impact> "
-            "--url <github file url> --summary \"...\" --steps \"where found + the validation call and its "
-            "result\" --impact \"...\"`. NEVER write the secret value anywhere - mask it (last 4 chars only). "
-            "Also record unvalidated-but-promising ones as leads. If a dork reveals new subdomains of the "
-            "target, add them with `hk add host`.\n"
-            "Respect the program rules: if the policy forbids testing found credentials, record them as "
-            "findings WITHOUT validating. Summarise what you found and validated in ./handoff.md."
+            "paced for its rate limit). For each hit, fetch the raw file and read the secret in context.\n"
+            "3. Filter the junk: discard localhost/example/test/sample/demo/placeholder values, example or "
+            "tutorial repos, documented sample keys, fixtures. Keep only real-looking secrets tied to the "
+            "target.\n"
+            "4. CLASSIFY each surviving secret by the OWNER of the repo it leaked from - this, not whether "
+            "the key is live, decides if it is reportable. Establish the owner with bounded, read-only "
+            "OSINT (the repo owner's GitHub profile company/bio/email, whether they are a public member of "
+            "the target's org, commit-author domains):\n"
+            "   - company-org: the repo sits under the target's official GitHub org(s). The company exposed "
+            "its own secret -> reportable.\n"
+            "   - company-person: an individual you can SHOW is an employee/affiliate of the target (profile "
+            "employer = target, a @<target-domain> commit email, listed org member). Reportable ONLY when "
+            "the secret is an INTERNAL company asset (step 5), not the person's own customer key.\n"
+            "   - third-party: a customer / seller / affiliate / integrator, OR any account whose link to "
+            "the company you cannot establish. Out of scope. Default here whenever affiliation is unproven "
+            "- never guess someone into company-person.\n"
+            "5. Also judge the secret's NATURE: internal/privileged (internal, admin, infra, CI/CD, service "
+            "account, database, cloud, signing keys, or anything granting cross-tenant / company-wide "
+            "access) vs tenant/customer (one third party's own credential for using the target's public or "
+            "partner API as themselves - e.g. a retailer/affiliate OAuth client_id+secret, scoped to that "
+            "one account).\n"
+            "6. DECIDE:\n"
+            "   - company-org + any live secret        -> FINDING.\n"
+            "   - company-person + internal/privileged  -> FINDING.\n"
+            "   - company-person + tenant/customer      -> LEAD (they leaked their own customer key; same "
+            "as a customer leak, out of scope).\n"
+            "   - third-party (any secret)              -> LEAD. Out of scope: record it masked, do NOT "
+            "validate it, do NOT use it. A courtesy heads-up to the company to revoke it may be noted, but "
+            "it is not a program finding.\n"
+            "7. VALIDATE only finding-track secrets (company-org, or company-person internal) with ONE "
+            f"minimal read-only call to the vendor - only to prove it is live, never to read or change "
+            f"data. Reachable vendor hosts for validation: {hosts}. If a finding-track secret's vendor is "
+            "NOT listed, record the finding marked UNVALIDATED (do not hit an arbitrary host). The target's "
+            "own keys validate through the scope proxy as usual. Never validate a third-party/customer "
+            "credential - that is touching someone else's account.\n"
+            "8. RECORD, masking every secret to its last 4 chars - never write the full value anywhere. "
+            "Reportable: `hk finding add --kind leaked-secret --severity <by impact> --url <github file "
+            "url> --summary \"what + provenance (company-org | company-person-internal)\" --steps \"where "
+            "found + the validation call and its result\" --impact \"...\"`. Out-of-scope: `hk add lead "
+            "leaked-secret-thirdparty <github file url> --evidence \"masked secret, scope=<>, owner="
+            "<seller/customer>, provenance=third-party; out of scope\"`. If a dork reveals new target "
+            "subdomains, add them with `hk add host`.\n"
+            "Respect the program rules: if the policy forbids testing found credentials, record "
+            "finding-track secrets WITHOUT validating. Summarise in ./handoff.md, grouped by provenance "
+            "(reportable findings vs third-party leads), so the report phase only drafts the reportable ones."
         )
 
     def check(self, ctx: Context, store: A.Assets) -> PhaseResult:
-        secrets = [f for f in store.findings() if f["kind"] == "leaked-secret"]
+        secrets = [f for f in store.findings() if (f["kind"] or "").startswith("leaked-secret")]
+        leads = [l for l in store.leads() if (l["kind"] or "").startswith("leaked-secret")]
+        note = (f"{len(secrets)} reportable secret finding(s), "
+                f"{len(leads)} third-party/out-of-scope lead(s)")
         if not self.outputs_present(ctx):
-            return PhaseResult(st.PARTIAL, f"{len(secrets)} leaked-secret finding(s); agent did not finish")
-        return PhaseResult(st.DONE, f"{len(secrets)} leaked-secret finding(s)")
+            return PhaseResult(st.PARTIAL, note + "; agent did not finish")
+        return PhaseResult(st.DONE, note)

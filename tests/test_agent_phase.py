@@ -156,3 +156,19 @@ def test_github_dork_phase_runs_with_token_and_records_secret(env, make_target, 
     assert len(secrets_found) == 1 and secrets_found[0]["severity"] == "high"
     env_txt = (target.output / "phases" / "01b-dork-github" / "work" / "env.txt").read_text()
     assert "token ok" in env_txt and "api.github.com" in env_txt and "api.openai.com" in env_txt
+
+
+def test_github_dork_task_classifies_by_leaker():
+    """The dork task must gate reportability on WHO leaked the secret, not just
+    whether it is live: company-owned / employee-internal -> finding;
+    customer/seller/unproven -> out-of-scope lead, never validated."""
+    from hunter.phases.ai_dork import GithubDorkPhase
+
+    class _Ctx:
+        settings = {"osint": {"enabled": True, "validate_hosts": ["api.openai.com"]}}
+
+    low = GithubDorkPhase().task(_Ctx()).lower()
+    assert "company-org" in low and "company-person" in low and "third-party" in low
+    assert "leaked-secret-thirdparty" in low          # out-of-scope leaks are recorded as leads
+    assert "never validate a third-party" in low      # customer creds are not touched
+    assert "internal" in low and "tenant" in low       # the employee tie-breaker

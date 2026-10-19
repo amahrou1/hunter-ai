@@ -40,7 +40,25 @@ Discard a hit when the surrounding code or repo says it is not real:
 - clearly a public/sample key (Stripe's pk_test_, documented example tokens).
 Keep hits that look real and tied to the target (its org, its domain, its infra).
 
+## 3b. Classify by WHO leaked it (this decides scope, not whether it is live)
+A live secret is reportable only when the TARGET is responsible for the leak.
+Establish the repo owner with read-only OSINT (profile company/bio/email, org
+membership, commit-author domain):
+- company-org   : repo is under the target's official GitHub org(s)        -> FINDING
+- company-person: owner is provably a target employee/affiliate, AND the
+                  secret is an INTERNAL asset (infra/CI/service account/db/
+                  cloud/signing/admin, or cross-tenant access)             -> FINDING
+- company-person + the person's OWN customer/tenant key (e.g. a retailer/
+                  affiliate OAuth client_id+secret scoped to one account)  -> LEAD (out of scope)
+- third-party   : a customer / seller / affiliate / integrator, or anyone
+                  whose link to the company you cannot prove               -> LEAD (out of scope)
+Default to third-party whenever affiliation is unproven - never guess someone
+into company-person. Out-of-scope leaks are recorded masked with
+`hk add lead leaked-secret-thirdparty <url> --evidence "..."` and are NOT
+validated or used; a courtesy heads-up to the company to revoke may be noted.
+
 ## 4. Validate before reporting (minimal, read-only)
+Validate ONLY finding-track secrets (company-org, or company-person internal).
 Only validate a secret whose vendor host is in the allowed validation list
 (HUNTER_VALIDATE_HOSTS; a not-allowed vendor -> record the secret UNVALIDATED for
 manual check, do not hit an arbitrary host). Make ONE minimal, read-only call that
@@ -52,7 +70,7 @@ only proves the key is live - never read or change data beyond that:
   GET https://api.anthropic.com/v1/models, GET https://slack.com/api/auth.test,
   GET https://api.stripe.com/v1/account, GET https://api.github.com/user.
 - GitHub token: GET https://api.github.com/user (shows scopes).
-A live, non-expired secret tied to the target is a finding. Record it with
+A live, non-expired secret on the FINDING track (per 3b) is a finding. Record it with
 `hk finding add --kind leaked-secret --severity <high/critical by impact>
 --url <github file url> --summary "<secret type> for <service> leaked in <repo>"
 --steps "where it was found + the one validation call and its result (mask the
