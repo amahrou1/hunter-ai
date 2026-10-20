@@ -104,6 +104,27 @@ class Verdict(Exception):
     pass
 
 
+# Characters that mean an extracted token is NOT a literal host: shell variables
+# ($h), brace/bracket expansions ({host}, $(...)), regex metacharacters from a
+# grep/heredoc, globs, quotes. Such a token cannot be scope-checked statically -
+# the scope proxy still enforces the real host at request time - so the hook
+# skips it rather than false-blocking the agent (this was ~40% of all blocks).
+_NOT_A_HOST = set("${}[]()^|*`\\<>\"' ,")
+
+
+def _as_host(token: str) -> str | None:
+    """A cleaned hostname/IP to scope-check, or None if the token is not a
+    literal host (a flag, a number, a shell variable, a regex fragment)."""
+    token = token.strip().strip("\"'").rstrip(".,);:")
+    if not token or token.startswith("-"):
+        return None
+    if any(c in token for c in _NOT_A_HOST):
+        return None
+    if "." not in token and not _is_ip(token):   # not an FQDN and not an IP
+        return None
+    return token.lower()
+
+
 def _host_ok(host: str, scope: sc.Scope | None, extra: tuple[str, ...]) -> str | None:
     """None if allowed, else the reason."""
     host = sc.normalize_host(host)
@@ -205,6 +226,9 @@ def check_command(command: str, scope: sc.Scope | None, protected: list[str], ex
         for match in pattern.finditer(text):
             hosts.append(match.group(1))
     for host in hosts:
+        host = _as_host(host)
+        if host is None:
+            continue
         reason = _host_ok(host, scope, extra)
         if reason:
             raise Verdict(f"Blocked: {reason}. Only in-scope targets may be contacted "

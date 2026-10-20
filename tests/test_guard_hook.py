@@ -139,3 +139,26 @@ def test_operator_oob_hosts_are_allowed_in_payloads(scope):
     # And without the extra-hosts allowlist, the OOB host would be blocked.
     with pytest.raises(Verdict):
         check_command("curl -s http://38.242.235.206:8080/", scope, PROTECTED)
+
+
+# --- host-extraction false positives (shell vars, placeholders, regex, flags) ---
+@pytest.mark.parametrize("command", [
+    'for h in login.bol.com www.bol.com; do curl -sS "https://$h/"; done',   # $h skipped; literals in scope
+    'curl -sS "https://www.bol.com$p/health"',                               # www.bol.com$p -> skipped
+    'curl -sS "https://www.bol.com${path}"',                                 # ${path} -> skipped
+    "python3 -c 'url = \"https://{host}/api\"'",                            # {host} placeholder -> skipped
+    "grep -E 'login\\.bol\\.com' urls.txt",                                 # regex fragment -> skipped
+    "dnsx -l todo.txt -json -a -cname -silent -t 50 -rl 200",               # flags/numbers -> skipped
+    "httpx -l todo.txt -status-code -title -content-length -hash sha256",
+])
+def test_shell_vars_and_fragments_not_false_blocked(scope, command):
+    check_command(command, scope, PROTECTED)   # must not raise
+
+
+@pytest.mark.parametrize("command", [
+    "curl -sS https://evil.example.com/",     # a real out-of-scope host still blocks
+    "curl http://10.202.40.37/",              # a real out-of-scope IP still blocks
+])
+def test_real_out_of_scope_still_blocked_after_filter(scope, command):
+    with pytest.raises(Verdict):
+        check_command(command, scope, PROTECTED)
