@@ -53,8 +53,12 @@ class AIReportPhase(AgentPhase):
             for src in work_reports.glob("*.md"):
                 (out / src.name).write_text(src.read_text(encoding="utf-8", errors="replace"),
                                             encoding="utf-8")
-        n = len(list(out.glob("*.md"))) if out.is_dir() else 0
+        # Count finding drafts only - SUMMARY.md is the run summary, not a draft.
+        n = len([p for p in out.glob("*.md") if p.name.lower() != "summary.md"]) if out.is_dir() else 0
         confirmed = len(store.findings("confirmed")) + len(store.findings("reported"))
         if not self.outputs_present(ctx):
             return PhaseResult(st.PARTIAL, f"{n} draft(s) written; agent did not finish")
         return PhaseResult(st.DONE, f"{n} report draft(s) for {confirmed} confirmed finding(s)")
+
+    def needs_rerun(self, ctx: Context, store: A.Assets) -> bool:
+        return len(store.findings("confirmed")) > 0   # confirmed findings not yet drafted/reported

@@ -63,14 +63,26 @@ class IntakePhase(Phase):
 
         ownership = scope.rules.get("ownership_scope")
         confirmed = sc.parse_overrides(overrides_text)[0]
-        if ownership and not confirmed:
+        if ownership and not confirmed and scope.network_assets():
+            # There ARE assets to test, so "confirm more owned assets" is an
+            # optional expansion, not something to idle-wait on. Record it as an
+            # informational gap (no watched file) so an unattended run proceeds
+            # immediately instead of waiting out the blocker timeout. If the
+            # operator later adds lines to scope-overrides.txt, that change
+            # restarts the run on its own.
             owner = ownership["owner"]
             ctx.block(f"Assets you confirm belong to {owner}",
-                      f"This program's scope is \"assets owned by {owner}\", without a full list. The run never "
-                      f"guesses what {owner} owns: it tests only what policy.txt names"
-                      + (f" ({len(scope.network_assets())} asset(s))" if scope.network_assets() else "")
-                      + f" and what you confirm. Add the domains, wildcards or IP ranges you have checked belong "
-                      f"to {owner} to scope-overrides.txt, one per line, for example:\n"
+                      f"This program's scope is \"assets owned by {owner}\", without a full list. The run tests "
+                      f"what policy.txt names ({len(scope.network_assets())} asset(s)) plus its wildcards and "
+                      f"proceeds now. To widen it, add domains/wildcards/IP ranges you have confirmed belong to "
+                      f"{owner} to scope-overrides.txt (e.g. 'in *.{owner.lower().split()[0]}.com'); saving that "
+                      f"file restarts the run under the new scope.", [])
+        elif ownership and not confirmed:
+            owner = ownership["owner"]
+            ctx.block(f"Assets you confirm belong to {owner}",
+                      f"This program's scope is \"assets owned by {owner}\", without a full list, and nothing "
+                      f"testable was confirmed yet. Add domains/wildcards/IP ranges you have checked belong to "
+                      f"{owner} to scope-overrides.txt, one per line, e.g.:\n"
                       f"in *.{owner.lower().split()[0]}.com\nin 203.0.113.0/24", WATCH)
         if not scope.network_assets():
             if not ownership:

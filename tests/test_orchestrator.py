@@ -374,3 +374,65 @@ def test_clear_phase_blockers_dedupes(tmp_path):
     assert len(s.open_blockers()) == 2
     assert s.clear_phase_blockers("00-intake") == 2
     assert s.open_blockers() == []
+
+
+# --- the validate/disprove/report tail reopens when new findings appear -------
+class Producer(Phase):
+    def __init__(self, phase_id, log, add, version="1"):
+        self.id, self.name, self.version = phase_id, "producer", version
+        self.log, self.add = log, add
+
+    def run(self, ctx):
+        self.log.append("prod")
+        if self.add:
+            ctx.assets().add_finding(self.id, "x", status="candidate")
+        return PhaseResult(st.DONE, "done")
+
+
+class Tail(Phase):
+    id, name, version = "11-validate", "validate", "1"
+
+    def __init__(self, log):
+        self.log = log
+
+    def run(self, ctx):
+        self.log.append("val")
+        for f in ctx.assets().findings("candidate"):
+            ctx.assets().set_finding(f["id"], status="validated")
+        return PhaseResult(st.DONE, "done")
+
+    def needs_rerun(self, ctx, store):
+        return len(store.findings("candidate")) > 0
+
+
+def test_tail_reopens_when_new_candidates_appear(make_target, settings_secrets, notifier):
+    target = make_target()
+    log = []
+    _orch(target, settings_secrets, notifier, [Producer("08-x", log, add=False), Tail(log)]).run()
+    assert log == ["prod", "val"]                       # first run: nothing to validate
+    # a re-run of the producer (version bump) now yields a candidate; the
+    # already-DONE tail must reopen and validate it in the same pass.
+    _orch(target, settings_secrets, notifier,
+          [Producer("08-x", log, add=True, version="2"), Tail(log)]).run()
+    assert log == ["prod", "val", "prod", "val"]
+    rows = st.State(target.state_db).db.execute(
+        "select 1 from findings where status='validated'").fetchall()
+    assert len(rows) == 1
+
+
+def test_tail_phase_needs_rerun_signals(make_target, settings_secrets, notifier):
+    from hunter.phases.ai_validate import AIValidatePhase
+    from hunter.phases.ai_disprove import AIDisprovePhase
+    from hunter.phases.ai_report import AIReportPhase
+    from hunter.phases.base import Context
+    target = make_target()
+    state = st.State(target.state_db)
+    store = A.Assets(state.db)
+    ctx = Context(target, state, settings_secrets[0], settings_secrets[1], notifier)
+    assert not AIValidatePhase().needs_rerun(ctx, store)
+    store.add_finding("x", "c", status="candidate")
+    assert AIValidatePhase().needs_rerun(ctx, store)
+    store.add_finding("x", "v", status="validated")
+    assert AIDisprovePhase().needs_rerun(ctx, store)
+    store.add_finding("x", "f", status="confirmed")
+    assert AIReportPhase().needs_rerun(ctx, store)

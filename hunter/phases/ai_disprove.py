@@ -50,3 +50,6 @@ class AIDisprovePhase(AgentPhase):
         if not self.outputs_present(ctx):
             return PhaseResult(st.PARTIAL, f"{confirmed} confirmed so far; agent did not finish")
         return PhaseResult(st.DONE, f"{confirmed} finding(s) confirmed")
+
+    def needs_rerun(self, ctx: Context, store: A.Assets) -> bool:
+        return len(store.findings("validated")) > 0   # validated findings not yet confirmed/dropped

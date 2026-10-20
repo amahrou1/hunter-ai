@@ -216,6 +216,18 @@ class Orchestrator:
                                        reset_attempts=True)
                 self.ran.discard(phase.id)
                 row = self.state.phase(phase.id)
+            # A DONE phase with fresh work to do (the validate->disprove->report
+            # tail when new findings exist) reopens so unattended runs do not
+            # leave findings unprocessed.
+            if (row["status"] in st.SETTLED and row["version"] == phase.version
+                    and phase.id not in self.ran):
+                try:
+                    if phase.needs_rerun(self.ctx, self.ctx.assets()):
+                        self.state.reset_phase(phase.id, "new findings to process", reset_attempts=True)
+                        self.ran.discard(phase.id)
+                        row = self.state.phase(phase.id)
+                except Exception:
+                    pass
             if not self._should_run(phase, row):
                 if self._until and phase.id == self._until:
                     return  # already settled; stop here for a phase-by-phase run

@@ -186,6 +186,7 @@ def _run_once(cmd: list[str], env: dict[str, str], prompt_file: Path, workdir: P
                 raise
             finally:
                 watchdog.cancel()
+                _reap_group(proc)  # kill any background tools the agent left running
     except FileNotFoundError:
         return AgentResult(False, "", "not_installed", None, None, None, None, log_path,
                            time.monotonic() - started, choice.model,
@@ -245,6 +246,21 @@ def _stop_group(proc: subprocess.Popen, flag: threading.Event | None) -> None:
             return
         except subprocess.TimeoutExpired:
             continue
+
+
+def _reap_group(proc: subprocess.Popen) -> None:
+    """After a session ends (normally or not), kill anything the agent left
+    running in its process group - backgrounded ffuf/dnsx/arjun jobs that would
+    otherwise keep hitting the target and spending its rate budget. With
+    start_new_session the child is its own group leader, so its pid is the pgid;
+    once the group is empty os.killpg raises ProcessLookupError and we stop."""
+    pgid = proc.pid
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError):
+            return  # no leftover processes in the group
+        time.sleep(0.3)
 
 
 def _tail(path: Path, limit: int = 400) -> str:

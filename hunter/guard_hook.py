@@ -69,7 +69,11 @@ PROXY_BYPASS = [
 CONTROL = [
     (re.compile(r"\bhunt\s+(?:start|stop|run|resume|update|reset|reset-settings|setup|models|rate-cap|handle|new)\b"),
      "the run's controls are for the operator only"),
-    (re.compile(r"\b(?:pkill|killall)\b|\bkill\s+-?\w*\s*\$\(|mitmdump"), "processes of the run must not be stopped"),
+    # Agents may stop tools THEY started (a hung ffuf/dnsx), but never the scope
+    # proxy or the run's own controls.
+    (re.compile(r"\b(?:pkill|killall|kill)\b[^\n;&|]*\b(?:mitmdump|mitmproxy|guard_hook|orchestrator)\b"),
+     "the scope proxy and the run's own processes must not be stopped"),
+    (re.compile(r"\bmitmdump\b"), "the scope proxy must not be started or stopped"),
     (re.compile(r"\bsudo\b|\bsu\s+-"), "no root access"),
     (re.compile(r"\brm\s+-[a-z]*r[a-z]*f?\s+(?:/|~|\$HOME)(?:\s|$)"), "that would delete far too much"),
 ]
@@ -155,11 +159,21 @@ def check_command(command: str, scope: sc.Scope | None, protected: list[str], ex
         if pattern.search(text):
             raise Verdict(reason)
     for path in protected:
-        if path and path in text and re.search(r"(>|\btee\b|\bsed\s+-i|\brm\b|\bmv\b|\bcp\b|\bsqlite3\b|"
-                                               r"\btruncate\b|\bchmod\b|open\()", text):
+        if not path or path not in text:
+            continue
+        name = re.escape(path)
+        # Writing to / destroying a run file is blocked; READING it is fine
+        # (e.g. `sqlite3 state.db "select ..."` to check progress).
+        wrote = (re.search(rf">>?\s*{name}", text)
+                 or re.search(rf"\b(?:tee|rm|mv|cp|truncate|chmod)\b[^\n;&|]*{name}", text)
+                 or re.search(rf"\bsed\s+-i\b[^\n;&|]*{name}", text)
+                 or re.search(rf"open\(\s*['\"]?{name}", text))
+        sqlite_write = re.search(r"\bsqlite3\b", text) and re.search(
+            r"\b(?:insert|update|delete|drop|create|alter|replace|attach|vacuum|reindex)\b", text, re.I)
+        if wrote or sqlite_write:
             raise Verdict(f"{Path(path).name} belongs to the run; change it only through `hk` "
-                          f"(or ask the operator).")
-        if path and path.endswith("/tools") and path in text:
+                          f"(reading it is fine, e.g. a sqlite SELECT).")
+        if path.endswith("/tools") and path in text:
             raise Verdict("call the tools by name (the wrappers add the scope proxy), not from their folder")
 
     hosts: list[str] = []

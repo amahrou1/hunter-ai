@@ -54,3 +54,6 @@ class AIValidatePhase(AgentPhase):
         if not self.outputs_present(ctx):
             return PhaseResult(st.PARTIAL, f"{validated} validated, {candidates} still to check")
         return PhaseResult(st.DONE, f"{validated} finding(s) validated")
+
+    def needs_rerun(self, ctx: Context, store: A.Assets) -> bool:
+        return len(store.findings("candidate")) > 0   # unvalidated candidates waiting

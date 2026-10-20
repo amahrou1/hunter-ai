@@ -181,6 +181,14 @@ class Phase:
         nothing to check."""
         return True
 
+    def needs_rerun(self, ctx: Context, store) -> bool:
+        """A phase that is already DONE but should run again because new work
+        arrived for it - e.g. validation when fresh candidate findings exist.
+        Lets the validate -> disprove -> report tail pick up findings produced
+        by later testing phases on a resumed run, instead of staying stale.
+        Default: no."""
+        return False
+
 
 class PlannedPhase(Phase):
     """Placeholder for a phase that is designed but not built yet. It says
