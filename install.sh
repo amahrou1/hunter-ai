@@ -133,12 +133,26 @@ fi
 chmod +x "$REPO_DIR/bin/hbrowse" 2>/dev/null || true
 ln -sf "$REPO_DIR/bin/hbrowse" "$HOME/.local/bin/hbrowse" 2>/dev/null || true
 say "Installing the headless browser (Playwright Chromium)"
-if "$VENV/bin/python" -m playwright install --with-deps chromium >/dev/null 2>&1 \
-   || "$VENV/bin/python" -m playwright install chromium >/dev/null 2>&1; then
-  say "Headless browser ready."
+# The browser binary downloads as the current user; its system libraries need the
+# OS package manager (root). Do them separately so a non-root run still gets the
+# browser and only the one root step is left.
+if "$VENV/bin/python" -m playwright install chromium >/dev/null 2>&1; then
+  if [ "$(id -u)" = "0" ]; then
+    "$VENV/bin/python" -m playwright install-deps chromium >/dev/null 2>&1 \
+      && say "Headless browser ready." \
+      || say "Headless browser downloaded (its system libraries could not be installed - see 'hunt doctor')."
+  elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null \
+       && sudo "$VENV/bin/python" -m playwright install-deps chromium >/dev/null 2>&1; then
+    say "Headless browser ready."
+  elif "$VENV/bin/python" -m playwright install-deps chromium >/dev/null 2>&1; then
+    say "Headless browser ready."
+  else
+    say "Headless browser downloaded. ONE root step is left - run once as root:"
+    say "  $VENV/bin/python -m playwright install-deps chromium"
+  fi
 else
-  say "Headless browser not installed (optional). Install later with:"
-  say "  $VENV/bin/python -m playwright install --with-deps chromium"
+  say "Headless browser could not be downloaded. Check 'hunt doctor'; if it says the"
+  say "OS is unsupported, the playwright pin in requirements.txt needs adjusting."
 fi
 
 # --- 6. Self-check ------------------------------------------------------

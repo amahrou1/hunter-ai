@@ -3,4 +3,8 @@
 mitmproxy>=10
 # playwright drives the scope-proxied headless browser (hbrowse) for client-side
 # testing. install.sh also runs `playwright install chromium` to fetch the browser.
-playwright>=1.40
+# Pinned: newer Playwright dropped Ubuntu 20.04 (the VPS OS) and refuses to install
+# a Chromium there ("does not support chromium on ubuntu20.04-x64"). 1.48.0 is the
+# last line that ships a focal-compatible Chromium. Raise this only if the VPS OS
+# is upgraded past 20.04.
+playwright==1.48.0

@@ -205,11 +205,14 @@ def check_browser(report: Report, settings: dict) -> None:
             report.add(PASS, "Headless browser", "Playwright Chromium ready")
         else:
             report.add(WARN, "Headless browser",
-                       "Chromium not downloaded. Run: .venv/bin/python -m playwright install --with-deps chromium")
+                       "Chromium not downloaded. Run: .venv/bin/python -m playwright install chromium "
+                       "(then, once as root: .venv/bin/python -m playwright install-deps chromium)")
     except Exception as exc:
-        report.add(WARN, "Headless browser",
-                   f"Playwright present but Chromium not usable ({exc}). "
-                   "Run: .venv/bin/python -m playwright install --with-deps chromium")
+        hint = ("the OS is unsupported by this Playwright version - adjust the playwright pin in "
+                "requirements.txt and re-run hunt update" if "does not support" in str(exc)
+                else "download it: .venv/bin/python -m playwright install chromium, then once as root: "
+                     ".venv/bin/python -m playwright install-deps chromium")
+        report.add(WARN, "Headless browser", f"Chromium not usable ({exc}). {hint}")
 
 
 def run_doctor(out: Callable[[str], None] = print, quick: bool = False) -> int:
