@@ -77,7 +77,7 @@ def test_default_pipeline_runs_and_is_honest(make_target, settings_secrets, noti
     assert rows["00-intake"]["status"] == st.DONE
     # Every phase is built now: nothing is left NOT_BUILT or PENDING.
     assert not [pid for pid, r in rows.items() if r["status"] in (st.NOT_BUILT, st.PENDING)]
-    assert len(rows) == 18
+    assert len(rows) == len(all_phases())
     assert (target.output / "run_summary.md").exists()
     assert notifier.titles()[0] == "Run started: acme"
     assert "Scope ready" in notifier.titles()

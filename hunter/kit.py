@@ -62,6 +62,7 @@ Built-in checks
   hk secrets <file|dir>            scan for leaked keys/tokens (reports kinds, values masked)
   hk vhost <ip-url>                find virtual hosts on an IP (Host-header fuzz, in-scope names)
   hk cache <url>                   probe web-cache poisoning / deception (detect-only, records a lead)
+  hk techhints                     tech-specific test hints for the stacks found on this target
   hk wordlist                      path of the built-in discovery list
 
 Reporting
@@ -598,6 +599,47 @@ def cmd_depconf(kit: Kit, args) -> int:
     return 0
 
 
+def cmd_techhints(kit: Kit, args) -> int:
+    from . import techhints
+    fps: list[str] = []
+    for row in kit.store.services():
+        for col in ("server", "tech", "title"):
+            try:
+                v = row[col]
+            except (KeyError, IndexError):
+                v = None
+            if v:
+                fps.append(str(v))
+    hints = techhints.hints_for(fps)
+    if args.json:
+        print(json.dumps([{"tech": k, "hint": h} for k, h in hints], indent=1))
+        return 0
+    if not hints:
+        print("no known technology-specific hints for this target's fingerprints")
+        return 0
+    for keyword, hint in hints:
+        print(f"[{keyword}] {hint}")
+    return 0
+
+
+def cmd_jsintel(kit: Kit, args) -> int:
+    from . import paths
+    print(paths.REPO_DIR / "hunter" / "data" / "jsintel_playbook.md")
+    return 0
+
+
+def cmd_authflows(kit: Kit, args) -> int:
+    from . import paths
+    print(paths.REPO_DIR / "hunter" / "data" / "authflows_playbook.md")
+    return 0
+
+
+def cmd_graphql(kit: Kit, args) -> int:
+    from . import paths
+    print(paths.REPO_DIR / "hunter" / "data" / "graphql_playbook.md")
+    return 0
+
+
 def cmd_progress(kit: Kit, args) -> int:
     kit.state.set_progress(kit.phase, args.step, args.done, args.total, args.unit)
     return 0
@@ -669,6 +711,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("playbook").set_defaults(func=cmd_playbook)
     sub.add_parser("dorks").set_defaults(func=cmd_dorks)
     sub.add_parser("depconf").set_defaults(func=cmd_depconf)
+    a = sub.add_parser("techhints"); a.add_argument("--json", action="store_true")
+    a.set_defaults(func=cmd_techhints)
+    sub.add_parser("jsintel").set_defaults(func=cmd_jsintel)
+    sub.add_parser("authflows").set_defaults(func=cmd_authflows)
+    sub.add_parser("graphql").set_defaults(func=cmd_graphql)
     a = sub.add_parser("finding"); a.add_argument("action", choices=["add", "set", "list", "show"])
     a.add_argument("id", nargs="?"); a.add_argument("--title"); a.add_argument("--kind")
     a.add_argument("--severity", choices=["info", "low", "medium", "high", "critical"])

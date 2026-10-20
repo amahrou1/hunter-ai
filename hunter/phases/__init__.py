@@ -16,10 +16,13 @@ from .ai_probe import AIProbePhase
 from .ai_map import AIMapPhase
 from .ai_discover import AIDiscoverPhase
 from .ai_js import AIJsPhase
+from .ai_jsintel import JsIntelPhase
 from .ai_depconf import DepConfusionPhase
 from .ai_accounts import AIAccountsPhase
+from .ai_authflows import AuthFlowsPhase
 from .ai_authz import AIAuthzPhase
 from .ai_injection import AIInjectionPhase
+from .ai_graphql import GraphQLPhase
 from .ai_misconfig import AIMisconfigPhase
 from .ai_hunt import AIHuntPhase
 from .ai_validate import AIValidatePhase
@@ -38,13 +41,24 @@ def all_phases() -> list[Phase]:
         AIMapPhase(),
         AIDiscoverPhase(),
         AIJsPhase(),
+        # Semantic JS analysis: auth mechanisms, roles, hidden endpoints, GraphQL
+        # ops, secrets and DOM sinks. Runs after 06-js (reuses its downloads) and
+        # before the testing phases it feeds.
+        JsIntelPhase(),
         # Dependency confusion: internal package names from the harvested JS (+
         # the org repos) cross-referenced against public registries. Runs before
         # validation so its candidates are validated, disproved and reported.
         DepConfusionPhase(),
         AIAccountsPhase(),
+        # Account & auth-flow logic (registration/reset/2FA/OAuth ATO class).
+        # Needs the accounts from 07-accounts; not IDOR (a separate effort).
+        AuthFlowsPhase(),
         AIAuthzPhase(),
         AIInjectionPhase(),
+        # GraphQL-specific testing (introspection, GET-CSRF, field exposure).
+        # Per-object mutation authz is deferred to the authed-testing effort;
+        # DoS is noted, never executed.
+        GraphQLPhase(),
         AIMisconfigPhase(),
         # Skills pass is a TESTING phase: it must run before validation so any
         # finding/lead it produces is validated, disproved and reported.

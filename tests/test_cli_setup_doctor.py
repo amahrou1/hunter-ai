@@ -98,7 +98,8 @@ def test_cli_run_and_status(env, make_target, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "00-intake" in out and "phases finished" in out
     assert cli.main(["status"]) == 0
-    assert "1/18 phases finished" in capsys.readouterr().out
+    from hunter.phases import all_phases
+    assert f"1/{len(all_phases())} phases finished" in capsys.readouterr().out
     assert cli.main(["scope", "acme", "check", "https://app.acme-test.com/x"]) == 0
     assert "ALLOWED" in capsys.readouterr().out
     assert cli.main(["scope", "acme", "check", "https://status.acme-test.io/"]) == 3
