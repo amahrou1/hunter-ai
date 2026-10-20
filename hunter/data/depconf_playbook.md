@@ -46,38 +46,94 @@ the matching public registry (or whose public scope is unclaimed).**
   `vendor` too (an unclaimed vendor namespace is the strong case).
 
 ## 3. Cross-reference the PUBLIC registry (read-only GET, the key test)
-For each candidate, one GET decides it. 404 = unclaimed (candidate). 200 =
-already public (usually NOT a candidate - it is a normal public dep) unless the
-public owner is clearly unrelated and the target pins a higher internal version.
-- npm:   `curl -s -o /dev/null -w "%{http_code}" https://registry.npmjs.org/<name>`
+For each candidate, a GET decides it - but only a **confirmed 404** counts as
+unclaimed. A single request can lie: a transient 5xx, a network error, a
+rate-limit (429/503), or a proxy block all return non-200 without meaning the
+name is free. So:
+- **404** on a clean retry = unclaimed = candidate.
+- **200** = already public (usually NOT a candidate - a normal public dep)
+  unless the public owner is clearly unrelated and the target pins a higher
+  internal version.
+- **anything else (000/429/5xx/403/timeout)** = UNKNOWN, not a candidate.
+  Retry once after a short pause; if it still is not a clean 404 or 200, record
+  it as a weak lead marked `registry-check=unknown`, never as a finding. Do not
+  turn a failed lookup into "unclaimed".
+Make the call twice (or `--retry 2`) and treat only a stable 404 as unclaimed:
+- npm:   `curl -s --retry 2 --max-time 15 -o /dev/null -w "%{http_code}" https://registry.npmjs.org/<name>`
          (URL-encode a scope slash: `@acme/foo` -> `@acme%2Ffoo`)
-- npm scope: if `@acme/*` is used, check whether the scope exists publicly at all
-         (`https://registry.npmjs.org/-/org/acme/package` or try a known name);
-         an **unclaimed scope** means every `@acme/x` is claimable - strong.
-- pip:   `curl -s -o /dev/null -w "%{http_code}" https://pypi.org/pypi/<name>/json`
-- gem:   `curl -s -o /dev/null -w "%{http_code}" https://rubygems.org/api/v1/gems/<name>.json`
-- composer: `curl -s -o /dev/null -w "%{http_code}" https://repo.packagist.org/p2/<vendor>/<package>.json`
+- npm scope: if `@acme/*` is used, an **unclaimed scope** means every `@acme/x`
+         is claimable - the strongest case. Confirm the scope is unclaimed with
+         BOTH endpoints (an org can be registered as a user or an org):
+         `https://registry.npmjs.org/-/org/<scope>/package` AND
+         `https://www.npmjs.com/~<scope>` / `https://www.npmjs.com/org/<scope>`.
+         Only call a scope unclaimed when org AND user both 404. If ONE resolves,
+         the scope is owned (often a defensive empty registration) -> NOT a
+         candidate; note it as "scope defended".
+- pip:   `curl -s --retry 2 --max-time 15 -o /dev/null -w "%{http_code}" https://pypi.org/pypi/<name>/json`
+- gem:   `curl -s --retry 2 --max-time 15 -o /dev/null -w "%{http_code}" https://rubygems.org/api/v1/gems/<name>.json`
+- composer: `curl -s --retry 2 --max-time 15 -o /dev/null -w "%{http_code}" https://repo.packagist.org/p2/<vendor>/<package>.json`
+
+### Already-held names (do not re-report)
+A name published only as a `0.0.1-security` (or similarly tiny "security
+placeholder") version is a name a researcher has ALREADY locked and almost
+certainly already reported. Treat it as **taken** - it is not claimable, so it
+is NOT your candidate. Note it as "already held (security placeholder)" and move
+on; never file it as a finding.
 
 ## 4. Filter to high confidence (avoid noise)
 Keep a candidate only when ALL hold:
 - the name is clearly a dependency the TARGET uses (its repo manifest or its own
   JS bundle - not a transitive mention in a third-party vendor blob);
-- it is unclaimed publicly (404), or its scope is unclaimed;
+- it is unclaimed publicly (confirmed 404), or its scope is unclaimed (org AND
+  user both 404);
 - it is not a typo of a famous package (that is typosquatting, a different bug),
-  and not an obvious placeholder/example/local name.
+  and not an obvious placeholder/example/local name;
+- it is not an already-held security-placeholder name (step 3).
 Scoped internal names (`@company/...`) with an unclaimed scope are the strongest
 and cleanest to prove.
 
+### Provenance: whose package is it? (same rule as the dork phase)
+Dependency confusion is only in scope when the package is consumed by the
+TARGET's own first-party code - not by a third party's blob that merely happens
+to be hosted on, or embedded in, a target page. For each candidate, establish
+where the reference actually lives:
+- **first-party**: the specifier comes from the target's own bundle/app code or
+  a manifest in the target's own GitHub org -> in scope, finding-track.
+- **third-party**: the specifier comes only from an embedded seller / partner /
+  integrator / vendor widget, an iframe's own bundle, a customer-uploaded blob,
+  or any script whose owner is not the target -> OUT OF SCOPE. Record it as a
+  lead (`provenance=third-party`), do NOT file it as a finding, and do NOT PoC
+  it: claiming a name a third party depends on would affect that third party,
+  not the target.
+When you cannot establish that the consuming code is the target's own, default
+to third-party (lead), exactly as the dork phase defaults unproven affiliation
+to out-of-scope. Never guess a seller's widget into a first-party finding.
+
 ## 5. Record (NO publishing - that is the operator's manual step)
-For each high-confidence candidate:
-  `hk finding add --kind dependency-confusion --severity high --url <source: the
+Severity reflects CONFIDENCE. What this phase can prove is the *precondition*
+(referenced + unclaimed), NOT that a build actually resolves the public registry
+- that is only known after the operator's callback PoC. So:
+- record first-party, confirmed-unclaimed candidates at **--severity medium**
+  with the status left at `candidate` (the default), and
+- state the limit plainly in the summary: "UNCONFIRMED - reachability not yet
+  proven; needs the operator publish+callback PoC to confirm a build resolves
+  public npm."
+Only after a callback confirms a real build/dev host pulled the package does it
+become high/critical - the operator (or the validate phase) raises it then.
+
+For each first-party, high-confidence candidate:
+  `hk finding add --kind dependency-confusion --severity medium --url <source: the
   github file URL or the JS bundle URL> --summary "internal <eco> package
-  '<name>' used by <where> is unclaimed on <registry>" --steps "<source +
-  evidence + the registry 404>" --impact "if a build resolves the public
-  registry, an attacker-published <name>@<higher-version> runs on the build/dev
-  host (RCE)"`.
-Weaker/uncertain ones -> `hk add lead dependency-confusion <source-url>
---evidence "<name> on <eco>, registry says <code>"`.
+  '<name>' used by <first-party where> is unclaimed on <registry> (scope
+  unclaimed: org+user 404). UNCONFIRMED - reachability not proven" --steps
+  "<source + evidence + the confirmed registry 404s> + the operator PoC below"
+  --impact "IF a build resolves the public registry, an attacker-published
+  <name>@<higher-version> runs on the build/dev host (RCE). Not yet confirmed
+  reachable."`.
+Weaker/uncertain ones (registry-check unknown, provenance third-party, or you
+could not confirm first-party use) -> `hk add lead dependency-confusion
+<source-url> --evidence "<name> on <eco>, registry says <code>,
+provenance=<first|third>-party"`.
 Then `hk notify "Dependency confusion candidate" "<name> (<eco>) unclaimed -
 source <url>"` so the operator sees it.
 
