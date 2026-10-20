@@ -74,11 +74,90 @@ class TokenBucket:
                 await asyncio.sleep((1 - self.tokens) / self.rate)
 
 
+# Status codes that mean "you are going too fast / you are being throttled".
+_THROTTLE_CODES = frozenset({429, 503})
+
+
+class HostGovernor:
+    """Per-host adaptive backoff, layered under the global rate limit.
+
+    The global TokenBucket caps the whole run's request rate. But a single
+    host can start returning 429 / 503 (or a 403 ban page) long before the
+    global cap is a problem - and an agent that keeps hammering it just gets
+    the source IP banned, which can burn the rest of the run against that
+    target. This governor watches responses per host and, when a host starts
+    signalling distress, makes the proxy wait before the NEXT request to that
+    same host. It only ever ADDS delay to a sore host; it never speeds anything
+    up, so the global cap and scope rules are untouched.
+
+    The penalty grows multiplicatively with consecutive throttle signals
+    (0 -> base -> 2x -> 4x ... capped) and decays to zero over `cooldown`
+    seconds of clean responses, so a host that recovers is sped back up.
+    Enforced at the network layer, so the agent cannot bypass it.
+    """
+
+    def __init__(self, base_delay: float = 2.0, max_delay: float = 60.0,
+                 cooldown: float = 30.0, trip_after: int = 1):
+        self.base_delay = max(0.0, float(base_delay))
+        self.max_delay = max(self.base_delay, float(max_delay))
+        self.cooldown = max(1.0, float(cooldown))
+        self.trip_after = max(1, int(trip_after))
+        # host -> [strikes, next_allowed_monotonic, last_signal_monotonic]
+        self._state: dict[str, list[float]] = {}
+        self.lock = asyncio.Lock()
+
+    def _delay_for(self, strikes: int) -> float:
+        if strikes < self.trip_after:
+            return 0.0
+        over = strikes - self.trip_after
+        return min(self.max_delay, self.base_delay * (2 ** over))
+
+    async def wait(self, host: str) -> float:
+        """Block until this host is allowed to be hit again. Returns the
+        seconds waited (0 when the host is healthy). Called before a request."""
+        async with self.lock:
+            st = self._state.get(host)
+            if not st:
+                return 0.0
+            now = time.monotonic()
+            # Decay strikes after a clean cooldown window with no new signals.
+            if now - st[2] >= self.cooldown and st[0] > 0:
+                st[0] = max(0.0, st[0] - 1)
+                st[2] = now
+            wait_s = max(0.0, st[1] - now)
+            if wait_s > 0:
+                st[1] = now + wait_s  # keep the gate; serialise waiters on this host
+        if wait_s > 0:
+            await asyncio.sleep(wait_s)
+        return wait_s
+
+    def record(self, host: str, status: int | None, throttled: bool) -> None:
+        """Note a response. `throttled` True => schedule backoff for this host;
+        a clean response lets the host decay back toward full speed. Sync (no
+        await) so it is safe to call from the response hook."""
+        st = self._state.get(host)
+        now = time.monotonic()
+        if throttled:
+            if st is None:
+                st = [0.0, now, now]
+                self._state[host] = st
+            st[0] += 1
+            st[2] = now
+            delay = self._delay_for(int(st[0]))
+            st[1] = max(st[1], now + delay)
+        elif st is not None and st[0] > 0:
+            # A clean response nudges recovery; full decay happens in wait().
+            if now - st[2] >= self.cooldown:
+                st[0] = max(0.0, st[0] - 1)
+                st[2] = now
+
+
 class ScopeGuard:
     def __init__(self) -> None:
         self.scope: sc.Scope | None = None
         self.scope_mtime: tuple = ()
         self.bucket: TokenBucket | None = None
+        self.governor: HostGovernor | None = None
         self.passthrough: set[str] = set()
         self.log_handle = None
         self.log_path: Path | None = None
@@ -98,6 +177,14 @@ class ScopeGuard:
                           "Rotate traffic.jsonl when it passes this many MB (0 = never)")
         loader.add_option("hunter_log_keep", int, 3,
                           "How many rotated traffic.N.jsonl files to keep")
+        # mitmproxy options only support int/str/bool, so the backoff seconds
+        # are passed as strings and parsed to float here.
+        loader.add_option("hunter_backoff_base", str, "2.0",
+                          "Per-host backoff: seconds for the first throttle signal (0 = disabled)")
+        loader.add_option("hunter_backoff_max", str, "60.0",
+                          "Per-host backoff: ceiling in seconds")
+        loader.add_option("hunter_backoff_cooldown", str, "30.0",
+                          "Per-host backoff: clean seconds before a host decays back toward full speed")
 
     def configure(self, updated) -> None:
         if "hunter_passthrough" in updated:
@@ -108,6 +195,20 @@ class ScopeGuard:
             self.log_max_bytes = max(0, int(ctx.options.hunter_log_max_mb)) * 1_000_000
         if "hunter_log_keep" in updated:
             self.log_keep = max(1, int(ctx.options.hunter_log_keep))
+        if {"hunter_backoff_base", "hunter_backoff_max", "hunter_backoff_cooldown"} & set(updated):
+            def _f(opt, default):
+                try:
+                    return float(opt)
+                except (TypeError, ValueError):
+                    return default
+            base = _f(ctx.options.hunter_backoff_base, 2.0)
+            if base > 0:
+                self.governor = HostGovernor(
+                    base_delay=base,
+                    max_delay=_f(ctx.options.hunter_backoff_max, 60.0),
+                    cooldown=_f(ctx.options.hunter_backoff_cooldown, 30.0))
+            else:
+                self.governor = None  # disabled
         if "hunter_log" in updated and ctx.options.hunter_log:
             path = Path(ctx.options.hunter_log)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -178,6 +279,13 @@ class ScopeGuard:
                     scope.rules.get("user_agent_mode") or "append")
             elif name not in flow.request.headers:
                 flow.request.headers[name] = value
+        # Per-host adaptive backoff: a host that recently returned 429/503 is
+        # held back before the global bucket, so we ease off a sore target
+        # instead of hammering it into an IP ban. Only ever adds delay.
+        if self.governor is not None:
+            waited = await self.governor.wait(host)
+            if waited:
+                flow.metadata["hunter_backoff_s"] = round(waited, 2)
         if self.bucket is not None:
             await self.bucket.take()
         flow.metadata["hunter_start"] = time.time()
@@ -186,6 +294,9 @@ class ScopeGuard:
     def response(self, flow: http.HTTPFlow) -> None:
         if flow.metadata.get("hunter_passthrough") or flow.metadata.get("hunter_logged"):
             return
+        if self.governor is not None:
+            status = flow.response.status_code if flow.response else None
+            self.governor.record(flow.request.pretty_host, status, self._is_throttle(flow))
         self._write(flow)
 
     def error(self, flow: http.HTTPFlow) -> None:
@@ -198,6 +309,25 @@ class ScopeGuard:
             self.log_handle.close()
 
     # helpers ---------------------------------------------------------------
+    @staticmethod
+    def _is_throttle(flow: http.HTTPFlow) -> bool:
+        """True when a response signals rate-limiting / a soft ban: 429 or 503
+        always; a 403 only when a Retry-After header or a rate-limit hint is
+        present (a plain 403 is ordinary authz, not throttling)."""
+        resp = flow.response
+        if resp is None:
+            return False
+        code = resp.status_code
+        if code in _THROTTLE_CODES:
+            return True
+        if code == 403:
+            if "Retry-After" in resp.headers:
+                return True
+            hint = (resp.headers.get("X-RateLimit-Remaining", "") == "0"
+                    or "rate limit" in (resp.headers.get("X-Error", "") or "").lower())
+            return bool(hint)
+        return False
+
     def _is_passthrough(self, host: str) -> bool:
         host = sc.normalize_host(host)
         return any(host == p or host.endswith("." + p) for p in self.passthrough)
@@ -261,6 +391,7 @@ class ScopeGuard:
             "blocked": blocked,
             "error": error,
             "duration_ms": round((time.time() - started) * 1000) if started else None,
+            "backoff_s": flow.metadata.get("hunter_backoff_s"),
             "req_headers": dict(req.headers) if not connect else None,
             "req_body": None if connect else self._body(req),
             "resp_headers": dict(resp.headers) if resp and not blocked else None,

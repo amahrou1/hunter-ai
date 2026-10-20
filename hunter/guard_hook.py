@@ -52,6 +52,12 @@ PUBLIC_RESOLVERS = ("1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "149.
                     "208.67.222.222", "208.67.220.220", "127.0.0.53")
 
 SCANNERS = ("nmap", "masscan", "zmap", "naabu", "rustscan", "hping3", "unicornscan", "zgrab", "zgrab2")
+# DNS resolution load: dnsx fans out to public resolvers that do NOT go through
+# the scope proxy, so the proxy cannot throttle them. A high query rate can get
+# the VPS IP throttled or temp-banned by those resolvers and drop results. The
+# hook requires dnsx to carry a rate-limit flag at or below HUNTER_DNS_MAX_RPS.
+_DNSX_RE = re.compile(r"(?<![\w/.-])dnsx(?![\w-])")
+_DNSX_RATE_RE = re.compile(r"(?:^|\s)-(?:rl|rate-limit)(?:\s+|=)(\d+)")
 BRUTE = ("hydra", "medusa", "ncrack", "patator", "crowbar", "thc-hydra", "kerbrute", "crackmapexec", "netexec")
 PROXY_BYPASS = [
     (re.compile(r"--no-?proxy\b"), "--noproxy switches the scope guard off"),
@@ -166,6 +172,33 @@ def _roots(scope: sc.Scope | None) -> set[str]:
     return roots
 
 
+def _dns_max_rps() -> int:
+    try:
+        value = int(os.environ.get("HUNTER_DNS_MAX_RPS", "0"))
+    except ValueError:
+        return 0
+    return value if value > 0 else 0
+
+
+def _check_dns_rate(text: str) -> None:
+    """Require dnsx to carry an explicit rate limit at or below the ceiling.
+    Public resolvers bypass the scope proxy, so this is the only place the DNS
+    query rate can be bounded; without it a huge program can hammer resolvers
+    into throttling and drop resolutions."""
+    ceiling = _dns_max_rps()
+    if ceiling <= 0 or not _DNSX_RE.search(text):
+        return
+    match = _DNSX_RATE_RE.search(text)
+    if match is None:
+        raise Verdict(
+            f"dnsx must carry a rate limit so it does not overrun public resolvers. "
+            f"Add -rl {ceiling} (queries per second, at most {ceiling}).")
+    if int(match.group(1)) > ceiling:
+        raise Verdict(
+            f"dnsx -rl {match.group(1)} is too high; the resolver rate ceiling is {ceiling}/s. "
+            f"Use -rl {ceiling} or less.")
+
+
 def check_command(command: str, scope: sc.Scope | None, protected: list[str], extra: tuple[str, ...] = ()) -> None:
     """Raise Verdict(reason) if the command must not run."""
     text = command or ""
@@ -176,6 +209,7 @@ def check_command(command: str, scope: sc.Scope | None, protected: list[str], ex
     for word in BRUTE:
         if re.search(rf"(?<![\w/.-]){re.escape(word)}(?![\w-])", text):
             raise Verdict(f"{word}: brute forcing logins is never allowed in this run.")
+    _check_dns_rate(text)
     for pattern, reason in (*PROXY_BYPASS, *CONTROL, *PUBLISH):
         if pattern.search(text):
             raise Verdict(reason)

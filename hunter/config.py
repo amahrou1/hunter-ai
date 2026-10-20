@@ -116,7 +116,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "recon": {
         "subfinder_rps": 10, "subfinder_max_min": 15,
-        "dnsx_rps": 150, "dnsx_threads": 50,
+        # dnsx query-rate ceiling, enforced on the command by the guard hook
+        # (public resolvers bypass the scope proxy). The lower value applies
+        # when the program limits automated scanning.
+        "dnsx_rps": 150, "dnsx_rps_low_automation": 25, "dnsx_threads": 50,
         "brute_max_min": 20, "resolve_max_min": 20,
     },
     "probe": {
@@ -126,6 +129,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "tools": {
         # Soft memory cap per external tool (MB). The VPS has 8 GB.
         "mem_mb": 1500,
+    },
+    # Per-host adaptive backoff (enforced in the scope proxy). A host that
+    # returns 429/503 (or a 403 with a rate-limit signal) is slowed before the
+    # next request to it, so we ease off a sore target instead of hammering it
+    # into an IP ban. It only ever adds delay; the global rate cap still applies.
+    # Set base_seconds to 0 to disable.
+    "backoff": {
+        "base_seconds": 2.0,     # delay after the first throttle signal
+        "max_seconds": 60.0,     # ceiling (doubles per consecutive signal)
+        "cooldown_seconds": 30.0,  # clean time before a host speeds back up
     },
     # Keep a run's on-disk logs from filling the VPS disk (see logkeep.py).
     "logs": {

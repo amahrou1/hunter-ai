@@ -206,6 +206,14 @@ class AgentPhase(Phase):
             env["HUNTER_PRIOR_DIR"] = str(prior)
         env["HUNTER_PHASE"] = self.id
         env["HUNTER_SCOPE_FILE"] = str(ctx.target.scope_file)
+        # Resolver rate ceiling for dnsx (public resolvers bypass the proxy, so
+        # the command checker enforces this). Low-automation programs get a
+        # gentler cap.
+        recon_cfg = ctx.settings.get("recon", {}) or {}
+        dns_rps = int(recon_cfg.get("dnsx_rps", 150))
+        if ctx.scope().rules.get("low_automation"):
+            dns_rps = min(dns_rps, int(recon_cfg.get("dnsx_rps_low_automation", 25)))
+        env["HUNTER_DNS_MAX_RPS"] = str(dns_rps)
         env["HUNTER_PROTECTED"] = os.pathsep.join(str(p) for p in (
             ctx.target.scope_file, ctx.target.output / "avoid.json", ctx.target.state_db, tools))
         env["HUNTER_HOOK_LOG"] = str(ctx.target.logs / "hook-blocks.jsonl")

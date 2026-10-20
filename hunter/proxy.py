@@ -79,6 +79,10 @@ class ScopeProxy:
         logs_cfg = settings.get("logs", {})
         self.log_max_mb = int(logs_cfg.get("traffic_max_mb", 50))
         self.log_keep = int(logs_cfg.get("traffic_keep", 3))
+        bo = settings.get("backoff", {})
+        self.backoff_base = float(bo.get("base_seconds", 2.0))
+        self.backoff_max = float(bo.get("max_seconds", 60.0))
+        self.backoff_cooldown = float(bo.get("cooldown_seconds", 30.0))
         self.confdir = paths.config_dir() / "mitmproxy"
         self.process: subprocess.Popen | None = None
         self._log_handle = None
@@ -142,6 +146,9 @@ class ScopeProxy:
             "--set", f"hunter_body_bytes={self.body_bytes}",
             "--set", f"hunter_log_max_mb={self.log_max_mb}",
             "--set", f"hunter_log_keep={self.log_keep}",
+            "--set", f"hunter_backoff_base={self.backoff_base}",
+            "--set", f"hunter_backoff_max={self.backoff_max}",
+            "--set", f"hunter_backoff_cooldown={self.backoff_cooldown}",
             "--set", f"hunter_passthrough={','.join(self.passthrough)}",
             # Targets often use self-signed or internal certificates.
             "--set", "ssl_insecure=true",
