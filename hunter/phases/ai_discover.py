@@ -7,7 +7,7 @@ pages do not produce false hits, and confirms sensitive hits by content."""
 
 from __future__ import annotations
 
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context
 
 
@@ -20,6 +20,20 @@ class AIDiscoverPhase(AgentPhase):
     role = "discoverer"
     max_turns = 90
     timeout_minutes = 300
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "Read the fuzzing playbook first: `cat $(hk playbook)` (wordlists, extensions, "
+                     "403-bypass tricks)."),
+            MustStep("M2", "For each service, get its tailored plan `hk fuzzplan <service-id>` and ffuf with "
+                     "that wordlist + extensions through the proxy; `hk import ffuf`."),
+            MustStep("M3", "Triage every interesting hit (admin/internal/api/upload/backup/config/401-403): "
+                     "fetch, read, record a finding for a real exposure or a lead to test later; recurse 2-3 "
+                     "levels with judgement. Try the playbook's 403 bypasses on gated paths."),
+            MustStep("M4", "Discover hidden parameters on dynamic endpoints (arjun or the plan's params list); "
+                     "record each as a lead for the injection/authz phases."),
+            MustStep("M5", "`hk mark discovered <service-id>` as you finish each service."),
+        ]
 
     def task(self, ctx: Context) -> str:
         return (

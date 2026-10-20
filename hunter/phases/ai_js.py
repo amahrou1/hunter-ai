@@ -6,7 +6,7 @@ variable names: fetch/axios calls, URLSearchParams, GraphQL operations."""
 
 from __future__ import annotations
 
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context
 
 
@@ -19,6 +19,16 @@ class AIJsPhase(AgentPhase):
     role = "jsanalyst"
     max_turns = 150
     timeout_minutes = 120
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "Build the JS queue (`hk endpoints --source js`); keep ./done.txt of analysed "
+                     "URLs and process the rest highest-value first (auth/app/admin bundles).", "done.txt"),
+            MustStep("M2", "For each file, extract endpoints and parameters (fetch/axios/XHR/route tables/"
+                     "GraphQL ops) and add in-scope ones with `hk add endpoint`; append the URL to ./done.txt."),
+            MustStep("M3", "Record secrets (API keys, tokens, internal URLs) as `hk add lead secret-in-js` "
+                     "by KIND only - never write a secret value."),
+        ]
 
     def task(self, ctx: Context) -> str:
         return (

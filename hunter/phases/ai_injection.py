@@ -8,7 +8,7 @@ destructive or data-exfiltrating payload."""
 
 from __future__ import annotations
 
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context
 
 
@@ -21,6 +21,18 @@ class AIInjectionPhase(AgentPhase):
     role = "injection"
     max_turns = 160
     timeout_minutes = 240
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "Gather the test surface: interesting params (`hk endpoints`), the 'parameters' "
+                     "and injection-candidate leads (`hk leads`), and forms."),
+            MustStep("M2", "Test each for reflected/stored/DOM XSS, SQL/NoSQL, SSRF, SSTI, open redirect, "
+                     "CRLF/header/host-header injection - detect with a harmless marker, then stop."),
+            MustStep("M3", "Where the app has AI/LLM features, test prompt injection, system-prompt/tool-"
+                     "schema leakage, and authz on AI-backed endpoints (REST and WebSocket)."),
+            MustStep("M4", "Record each candidate with `hk finding add` (exact request + the marker/response "
+                     "that proves it), status candidate; respect the excluded-vuln list."),
+        ]
 
     def task(self, ctx: Context) -> str:
         return (

@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .. import state as st
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context, PhaseResult
 
 
@@ -35,6 +35,14 @@ class AISkillsPhase(AgentPhase):
             ctx.log("no skills installed; skipping the skills pass")
             return PhaseResult(st.NOT_APPLICABLE, "no skills installed")
         return super().run(ctx)
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "List the researcher's skill playbooks and read the ones that fit this target."),
+            MustStep("M2", "Follow each relevant playbook against the mapped surface, reusing the test "
+                     "accounts, looking for what earlier phases missed."),
+            MustStep("M3", "Record new candidates with `hk finding add` (they go through validation/disproof)."),
+        ]
 
     def task(self, ctx: Context) -> str:
         skills = self._skills_dir(ctx)

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from .. import assets as A
 from .. import state as st
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context, PhaseResult
 
 
@@ -41,6 +41,21 @@ class DepConfusionPhase(AgentPhase):
     timeout_minutes = 120
     # Optional: GitHub scanning is a bonus. JS-based discovery works without it.
     secret_env = {"GITHUB_TOKEN": "GITHUB_TOKEN", "GH_TOKEN": "GITHUB_TOKEN"}
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "Collect package specifiers from the target's own JS (reuse 06-js) and, with a "
+                     "token, org manifests.", "candidates.txt"),
+            MustStep("M2", "Classify each name's ecosystem (npm/pip/gem/composer) and normalise.", "classified.txt"),
+            MustStep("M3", "Registry-check each name - only a CONFIRMED 404 (retry once) is unclaimed; a "
+                     "scope needs BOTH org AND user endpoints 404; a 0.0.1-security hold is already taken.",
+                     "registry.txt"),
+            MustStep("M4", "Provenance per unclaimed name: first-party (target's own code/org) vs third-party "
+                     "(seller/partner/vendor); default to third-party when unproven.", "provenance.txt"),
+            MustStep("M5", "Record: first-party + confirmed-unclaimed -> `hk finding add` (severity medium, "
+                     "status candidate, UNCONFIRMED caveat, operator PoC in steps); else `hk add lead`. "
+                     "NEVER publish a package."),
+        ]
 
     def task(self, ctx: Context) -> str:
         has_gh = bool(ctx.secrets.get("GITHUB_TOKEN") or ctx.secrets.get("GH_TOKEN"))

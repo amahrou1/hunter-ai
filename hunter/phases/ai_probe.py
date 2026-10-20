@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .. import assets as A
 from .. import state as st
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context, PhaseResult
 
 
@@ -22,6 +22,16 @@ class AIProbePhase(AgentPhase):
     role = "prober"
     max_turns = 70
     timeout_minutes = 180
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "Probe all resolved in-scope hosts in batched httpx runs (-title -tech-detect "
+                     "-status-code, scope rate) and `hk import httpx` until `hk hosts --unprobed` is empty."),
+            MustStep("M2", "If the scope has IP/CIDR ranges, run `hk portscan` once and httpx-probe the web "
+                     "targets it prints."),
+            MustStep("M3", "Run `hk baseline` so every service has its not-found answer (later fuzzing needs it)."),
+            MustStep("M4", "Re-check takeover candidates with `hk takeover` and HTTP-probe any flagged host."),
+        ]
 
     def task(self, ctx: Context) -> str:
         return (

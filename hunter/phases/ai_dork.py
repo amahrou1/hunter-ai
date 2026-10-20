@@ -25,7 +25,7 @@ from pathlib import Path
 
 from .. import assets as A
 from .. import state as st
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context, PhaseResult
 
 
@@ -57,6 +57,21 @@ class GithubDorkPhase(AgentPhase):
         self.allow_hosts = _validate_hosts(ctx.settings) + ("api.github.com", "raw.githubusercontent.com",
                                                             "github.com", "codeload.github.com")
         return super().run(ctx)
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "Search the target's GitHub for leaked secrets with the curated dork/regex set; "
+                     "collect candidate secrets."),
+            MustStep("M2", "Filter false positives (examples/placeholders/revoked) and keep only plausible "
+                     "live secrets."),
+            MustStep("M3", "Classify each by REPO OWNER provenance (company-org / company-person / "
+                     "third-party) - this decides reportability, not whether the key is live."),
+            MustStep("M4", "Judge the secret's nature (internal/privileged vs tenant/customer)."),
+            MustStep("M5", "Validate ONLY finding-track secrets with one read-only call; never validate a "
+                     "third-party/customer credential."),
+            MustStep("M6", "Record masked (last 4 only): reportable -> `hk finding add` with provenance; "
+                     "third-party -> `hk add lead`. Group by provenance in ./handoff.md."),
+        ]
 
     def task(self, ctx: Context) -> str:
         hosts = ", ".join(_validate_hosts(ctx.settings)) or "(none configured)"

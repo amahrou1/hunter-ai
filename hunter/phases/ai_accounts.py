@@ -8,7 +8,7 @@ member) so permission boundaries can be tested. Never touches real users."""
 
 from __future__ import annotations
 
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context
 
 
@@ -21,6 +21,18 @@ class AIAccountsPhase(AgentPhase):
     role = "accounts"
     max_turns = 70
     timeout_minutes = 90
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "Read ./test-credentials.txt; if usable accounts exist, record them with `hk note` "
+                     "and skip creation."),
+            MustStep("M2", "`hk scope` - check self-registration is allowed; if forbidden or host is "
+                     "unauthenticated-only, record a blocker-note and stop."),
+            MustStep("M3", "If allowed, create the minimum set for authz testing - ideally two accounts in "
+                     "the same org/tenant (one higher, one lower privilege) using the required email domain."),
+            MustStep("M4", "Save every account created/confirmed to ./test-credentials.txt "
+                     "(label|email|password|notes); never store anyone else's credentials.", ),
+        ]
 
     def task(self, ctx: Context) -> str:
         return (

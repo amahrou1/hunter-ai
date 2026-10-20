@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from .. import assets as A
 from .. import state as st
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context, PhaseResult
 
 
@@ -23,6 +23,19 @@ class AIAuthzPhase(AgentPhase):
     role = "authz"
     max_turns = 160
     timeout_minutes = 240
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "Broken access control / IDOR / BOLA: do an action as the higher-priv account, "
+                     "replay as the lower-priv one and with no session; a reachable object/action is a finding."),
+            MustStep("M2", "Tenant isolation: can account A read/change account B's org data?"),
+            MustStep("M3", "Privilege escalation: can a member reach owner/admin functions (direct URL, "
+                     "forced browsing, parameter/role tampering)?"),
+            MustStep("M4", "API & GraphQL authz at the resolver: REST object IDs; GraphQL variables, nested "
+                     "queries, mutations, persisted/hashed queries."),
+            MustStep("M5", "Business logic: price/quantity/step manipulation, state skipping, one-time-action "
+                     "reuse. Record each with `hk finding add` incl. the control request; status candidate."),
+        ]
 
     def task(self, ctx: Context) -> str:
         return (

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from .. import assets as A
 from .. import state as st
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context, PhaseResult
 
 
@@ -21,6 +21,15 @@ class AIReportPhase(AgentPhase):
     role = "writer"
     max_turns = 120
     timeout_minutes = 180
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "Write one submission-ready Markdown draft per CONFIRMED finding into ./reports/ "
+                     "(house style: plain English, both Burp and curl repro, one concrete impact scenario, "
+                     "CVSS 3.1, Bugcrowd VRT)."),
+            MustStep("M2", "Set each drafted finding to status reported, and write ./reports/SUMMARY.md "
+                     "(what was tested, what was found by severity, what to double-check). Submit nothing."),
+        ]
 
     def task(self, ctx: Context) -> str:
         return (

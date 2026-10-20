@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from .. import assets as A
 from .. import state as st
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context, PhaseResult
 
 
@@ -24,6 +24,17 @@ class AIReconPhase(AgentPhase):
     role = "scanner"
     max_turns = 200
     timeout_minutes = 180
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "Enumerate subdomains passively for every in-scope wildcard root "
+                     "(subfinder + crt.sh); import each with `hk import subfinder`.", "done-roots.txt"),
+            MustStep("M2", "Resolve them with dnsx (cap the rate: `-rl $HUNTER_DNS_MAX_RPS`), then "
+                     "`hk import dnsx` to classify third-party and takeover candidates."),
+            MustStep("M3", "Re-check subdomain-takeover candidates with `hk takeover`."),
+            MustStep("M4", "Flag wildcard-DNS roots (a random name resolves) with `hk note` and "
+                     "deprioritise their echo hosts."),
+        ]
 
     def task(self, ctx: Context) -> str:
         return (

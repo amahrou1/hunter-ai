@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from .. import assets as A
 from .. import state as st
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context, PhaseResult
 
 
@@ -23,6 +23,16 @@ class AIValidatePhase(AgentPhase):
     role = "validator"
     max_turns = 140
     timeout_minutes = 240
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "For each candidate finding, reproduce it fresh through the proxy WITH a control "
+                     "request that should behave differently - the difference is the proof."),
+            MustStep("M2", "Disprove any that does not reproduce consistently (set status disproved + reason)."),
+            MustStep("M3", "For the real ones, settle severity + CVSS 3.1 vector, tighten the steps, and set "
+                     "status validated. Dependency-confusion: re-check the registry GET, keep the operator "
+                     "PoC, never publish."),
+        ]
 
     def task(self, ctx: Context) -> str:
         return (

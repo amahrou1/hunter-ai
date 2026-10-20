@@ -8,7 +8,7 @@ contacts no target."""
 
 from __future__ import annotations
 
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context
 
 
@@ -21,6 +21,18 @@ class IntelPhase(AgentPhase):
     role = "intel"
     max_turns = 60
     timeout_minutes = 60
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "Read ./reports.txt (your own past reports): note resolved bypass ideas and mark "
+                     "open ones 'avoid duplicate'."),
+            MustStep("M2", "Read ./resolved-reports.txt (others' disclosed reports) and extract recurring "
+                     "vulnerability patterns and the endpoints/features involved."),
+            MustStep("M3", "Look up public disclosed reports/write-ups for this program on the web (do not "
+                     "touch the program's own hosts here)."),
+            MustStep("M4", "Record findings as `hk note` guidance and in-scope `hk add lead`s for specific "
+                     "areas to test closely."),
+        ]
 
     def task(self, ctx: Context) -> str:
         return (

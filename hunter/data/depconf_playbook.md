@@ -1,5 +1,39 @@
 # Dependency confusion — discovery and validation (read this first)
 
+<!-- ===================== MANDATORY RUN CONTRACT ===================== -->
+<!-- If this phase is running, you MUST read this ENTIRE file and do every
+     MUST step below before you finish. A skim of the first screen is only
+     enough to know what this phase is - it is NOT enough to run it. Every
+     MUST step ends in a concrete artifact; a summary instead of the artifact
+     is a FAILURE, not "done". Drive the checklist to zero unchecked boxes. -->
+
+## RUN CONTRACT — complete every MUST (artifacts in ./ of your work dir)
+
+- [ ] **M1 Collect** package specifiers from the target's own JS (reuse 06-js)
+      and, if a GitHub token is set, org manifests. → artifact: `candidates.txt`
+      (one `name` or `@scope/name` per line). (§1)
+- [ ] **M2 Classify** each name's ecosystem (npm/pip/gem/composer) and normalise.
+      → artifact: `classified.txt` (`name<TAB>ecosystem`). (§2)
+- [ ] **M3 Registry check** each name with a CONFIRMED result (retry once; a
+      429/5xx/timeout is UNKNOWN, never "unclaimed"). Scopes need BOTH org AND
+      user endpoints 404. → artifact: `registry.txt` (`name<TAB>code<TAB>verdict`
+      where verdict ∈ unclaimed|public|held|unknown). (§3)
+- [ ] **M4 Provenance** for each unclaimed name: first-party (target's own
+      code/org) or third-party (seller/partner/vendor/customer). Default to
+      third-party when unproven. → artifact: `provenance.txt`
+      (`name<TAB>first|third`). (§4)
+- [ ] **M5 Record**: first-party + confirmed-unclaimed → `hk finding add`
+      (--severity medium, status candidate, "UNCONFIRMED" caveat, operator PoC in
+      steps). Everything else → `hk add lead`. Then `hk notify` each candidate. (§5)
+- [ ] **M6 Completion gate**: write `./handoff.md` summarising candidates
+      (name, ecosystem, source, registry verdict, provenance) ONLY after M1–M5
+      are done. If you could not finish, stop WITHOUT handoff.md (you resume next
+      run) — do not fake completion.
+
+NEVER publish a package (`npm publish`/`twine upload`/`gem push` are blocked).
+Publishing is the operator's manual PoC (§6).
+<!-- =================== END MANDATORY RUN CONTRACT =================== -->
+
 Dependency confusion: a build pulls a *public* package because an attacker
 published it under the same name as the target's *private/internal* package,
 with a higher version. The win is RCE on a build/dev machine. This phase finds

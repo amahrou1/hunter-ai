@@ -21,7 +21,7 @@ import re
 
 from .. import assets as A
 from .. import state as st
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context, PhaseResult
 
 # A run that passes must show it genuinely tried. The agent logs one entry per
@@ -38,6 +38,22 @@ class AIHuntPhase(AgentPhase):
     role = "hunter"
     max_turns = 400
     timeout_minutes = 300
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "Study the whole picture first (`hk stats/hosts/services/endpoints/leads`, every "
+                     "handoff, your past + others' disclosed reports) and build a model of this program's "
+                     "weak spots."),
+            MustStep("M2", "Write an attack plan with AT LEAST 15 concrete, evidence-tied hypotheses ranked "
+                     "by impact x likelihood, chains at the top.", "attack-plan.md"),
+            MustStep("M3", "Hunt each hypothesis deep and LOG every attempt (tried/evidence/verdict) - use "
+                     "curl, hbrowse, the OOB listener, mail.tm, the test accounts.", "hypotheses-tested.md"),
+            MustStep("M4", "Chain relentlessly: for every non-bug lead, ask what it becomes combined with "
+                     "another."),
+            MustStep("M5", "Second wind before concluding anything unexploitable: re-attack your three best "
+                     "dead-ends from a new angle."),
+            MustStep("M6", "Record only PROVEN candidates with `hk finding add`; never a guess."),
+        ]
 
     def task(self, ctx: Context) -> str:
         return (

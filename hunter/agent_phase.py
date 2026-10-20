@@ -27,6 +27,8 @@ import os
 from pathlib import Path
 
 from . import paths
+from . import runcontract
+from .runcontract import MustStep
 from .toolchain import tools_dir
 from . import state as st
 from .phases.base import Context, Phase, PhaseResult
@@ -155,11 +157,33 @@ class AgentPhase(Phase):
     def task(self, ctx: Context) -> str:  # pragma: no cover - interface
         raise NotImplementedError
 
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        """The phase's MANDATORY RUN CONTRACT: the must-run steps, each ending in
+        an artifact the phase can verify. Rendered as a checklist at the TOP of
+        the task so the critical steps are always in the first screen the agent
+        reads (the "first 150 lines" problem). Empty = no contract header (the
+        task prose stands alone); every real testing phase should define it."""
+        return []
+
+    def _full_task(self, ctx: Context) -> str:
+        """Contract checklist (if any) + the phase's detailed task prose."""
+        header = runcontract.render_contract(self.must_steps(ctx))
+        body = self.task(ctx)
+        return f"{header}\n{body}" if header else body
+
+    def missing_artifacts(self, ctx: Context) -> list[str]:
+        """Contract artifacts not yet produced - for check() to return PARTIAL
+        instead of a false DONE when the agent stopped early."""
+        return runcontract.artifacts_present(self._workdir(ctx), self.must_steps(ctx))
+
     def check(self, ctx: Context, store) -> PhaseResult:
-        """Default: DONE if the agent wrote a handoff, else PARTIAL."""
-        if (self._workdir(ctx) / "handoff.md").exists():
+        """Default: DONE when the handoff exists AND every contract artifact is
+        present; otherwise PARTIAL (resume)."""
+        missing = self.missing_artifacts(ctx)
+        if (self._workdir(ctx) / "handoff.md").exists() and not missing:
             return PhaseResult(st.DONE, "phase completed")
-        return PhaseResult(st.PARTIAL, "the agent did not finish; it will continue on the next start")
+        detail = f"; missing {', '.join(missing)}" if missing else ""
+        return PhaseResult(st.PARTIAL, "the agent did not finish; it will continue on the next start" + detail)
 
     # ------------------------------------------------------------------ run
     def run(self, ctx: Context) -> PhaseResult:
@@ -172,7 +196,7 @@ class AgentPhase(Phase):
         env = self._env(ctx, proxy, workdir)
         scope_summary = self._scope_summary(ctx)
         prompt = PREAMBLE.format(scope_summary=scope_summary, infra=self._infra(ctx),
-                                 prior=self._prior(ctx), task=self.task(ctx))
+                                 prior=self._prior(ctx), task=self._full_task(ctx))
         agent_cfg = ctx.settings.get("agent", {})
         minutes = float(agent_cfg.get("phase_minutes", {}).get(self.id, self.timeout_minutes))
         turns = int(agent_cfg.get("phase_turns", {}).get(self.id, self.max_turns))

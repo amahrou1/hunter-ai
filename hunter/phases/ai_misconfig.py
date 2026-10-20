@@ -8,7 +8,7 @@ scan. Turns the discovery-phase leads into findings where they hold up."""
 
 from __future__ import annotations
 
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context
 
 
@@ -21,6 +21,19 @@ class AIMisconfigPhase(AgentPhase):
     role = "misconfig"
     max_turns = 110
     timeout_minutes = 150
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "Confirm the discovery leads (`hk leads`): verify each exposed file/service is "
+                     "real, say what it exposes, promote real ones to findings."),
+            MustStep("M2", "CORS: test arbitrary/null Origin reflection with credentials."),
+            MustStep("M3", "Security & cookie headers with real impact (CSP/HSTS/XFO; Secure/HttpOnly/"
+                     "SameSite on authed hosts)."),
+            MustStep("M4", "Cache: is any per-user/sensitive response cacheable or shared-cached "
+                     "(deception/poisoning signals)?"),
+            MustStep("M5", "Disclosure: verbose errors, stack traces, version banners, dir listings, "
+                     "debug pages; and confirm each exposed-service lead read-only."),
+        ]
 
     def task(self, ctx: Context) -> str:
         return (

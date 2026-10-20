@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from .. import assets as A
 from .. import state as st
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context, PhaseResult
 
 
@@ -21,6 +21,15 @@ class AIMapPhase(AgentPhase):
     role = "mapper"
     max_turns = 90
     timeout_minutes = 300
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "Crawl every live in-scope service with katana through the proxy (scope rate), "
+                     "importing each batch with `hk import katana`; add in-scope gau/wayback URLs."),
+            MustStep("M2", "`hk mark crawled <service-id>` after each batch so a resumed run continues."),
+            MustStep("M3", "Record interesting parameters, forms (never submitted) and JavaScript files "
+                     "into the inventory as you go."),
+        ]
 
     def task(self, ctx: Context) -> str:
         return (

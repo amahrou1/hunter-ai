@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from .. import assets as A
 from .. import state as st
-from ..agent_phase import AgentPhase
+from ..agent_phase import AgentPhase, MustStep
 from .base import Context, PhaseResult
 
 
@@ -23,6 +23,17 @@ class AIDisprovePhase(AgentPhase):
     role = "disprover"
     max_turns = 120
     timeout_minutes = 180
+
+    def must_steps(self, ctx: Context) -> list[MustStep]:
+        return [
+            MustStep("M1", "For each validated finding, try hard to prove it WRONG: does it reproduce now? "
+                     "is there a benign explanation? is the asset in scope and the class accepted? is it a "
+                     "known duplicate?"),
+            MustStep("M2", "If it survives all challenges, set status confirmed; otherwise set status "
+                     "disproved with the reason. A finding you are unsure about is disproved, not confirmed. "
+                     "Dependency-confusion: confirm if still unclaimed; do not disprove for lacking a live "
+                     "callback."),
+        ]
 
     def task(self, ctx: Context) -> str:
         return (
