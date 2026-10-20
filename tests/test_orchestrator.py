@@ -317,3 +317,60 @@ def test_until_stops_after_named_phase(make_target, settings_secrets, notifier, 
     monkeypatch.delenv("HUNTER_UNTIL")
     _orch(target, settings_secrets, notifier, phases).run()
     assert log == ["00-intake", "02-recon", "03-probe"]
+
+
+# --- in-run retry of a PARTIAL phase while it is still making progress --------
+from hunter import assets as A  # noqa: E402
+
+
+class Progressing(Phase):
+    """PARTIAL while it keeps adding hosts, then DONE - like recon on a big
+    program that needs several passes."""
+    id, name, version = "02-prog", "progressing", "1"
+
+    def __init__(self, log):
+        self.log = log
+
+    def run(self, ctx):
+        self.log.append("run")
+        n = len(self.log)
+        if n <= 2:
+            ctx.assets().add_host(f"h{n}.example.com", A.IN, "test")
+            return PhaseResult(st.PARTIAL, f"added host {n}")
+        return PhaseResult(st.DONE, "done")
+
+
+class StuckPartial(Phase):
+    id, name, version = "02-stuck", "stuck", "1"
+
+    def __init__(self, log):
+        self.log = log
+
+    def run(self, ctx):
+        self.log.append("run")
+        return PhaseResult(st.PARTIAL, "no progress")
+
+
+def test_partial_phase_retried_while_progressing(make_target, settings_secrets, notifier):
+    target = make_target()
+    log = []
+    assert _orch(target, settings_secrets, notifier, [Progressing(log)]).run() == EXIT_OK
+    assert len(log) == 3                                  # retried in-run until it finished
+    assert st.State(target.state_db).phase("02-prog")["status"] == st.DONE
+
+
+def test_partial_phase_not_retried_without_progress(make_target, settings_secrets, notifier):
+    target = make_target()
+    log = []
+    _orch(target, settings_secrets, notifier, [StuckPartial(log)]).run()
+    assert len(log) == 1                                  # no inventory growth -> moves on, no spin
+    assert st.State(target.state_db).phase("02-stuck")["status"] == st.PARTIAL
+
+
+def test_clear_phase_blockers_dedupes(tmp_path):
+    s = st.State(tmp_path / "s.db")
+    s.add_blocker("00-intake", "assets owned by TikTok or its subsidiaries")
+    s.add_blocker("00-intake", "assets owned by TikTok (and its subsidiaries)")  # the duplicate-wording bug
+    assert len(s.open_blockers()) == 2
+    assert s.clear_phase_blockers("00-intake") == 2
+    assert s.open_blockers() == []

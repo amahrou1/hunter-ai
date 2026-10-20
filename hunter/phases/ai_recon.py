@@ -22,24 +22,32 @@ class AIReconPhase(AgentPhase):
     build_step = 4
     requires = ("00-intake",)
     role = "scanner"
-    max_turns = 80
-    timeout_minutes = 90
+    max_turns = 200
+    timeout_minutes = 180
 
     def task(self, ctx: Context) -> str:
         return (
-            "Map the attack surface.\n"
-            "1. `hk scope` to see the wildcard roots and explicit hosts in scope.\n"
-            "2. For each wildcard root, find subdomains passively (subfinder -silent -all -d <root> "
+            "Map the attack surface. On a big program this is a LOT of hosts, so work RESUMABLY and make "
+            "forward progress every run - do not restart from scratch each time.\n"
+            "1. `hk scope` to see the wildcard roots and explicit hosts in scope. Keep a file ./done-roots.txt "
+            "in this directory listing the roots you have FULLY enumerated and resolved; on every run skip any "
+            "root already in it and reuse files you already produced.\n"
+            "2. For each remaining wildcard root, find subdomains passively (subfinder -silent -all -d <root> "
             "-oJ -o subs-<root>.jsonl, and you may also query crt.sh directly). Import each result: "
             "`hk import subfinder <file>`.\n"
-            "3. Resolve everything: take the host list, run dnsx (-json -a -aaaa -cname -resp) into a "
-            "file, then `hk import dnsx <file>`. This also classifies third-party and takeover candidates.\n"
+            "3. Resolve them: run dnsx (-json -a -aaaa -cname -resp) over that root's hosts into a file, then "
+            "`hk import dnsx <file>` (this also classifies third-party and takeover candidates). Then append "
+            "that root to ./done-roots.txt before moving to the next, so the next run continues where you "
+            "stopped.\n"
             "4. Check the takeover candidates for real: `hk takeover`.\n"
-            "5. Watch for measurement problems: if a made-up random name under a root resolves, that root "
-            "has wildcard DNS and most 'hosts' are echoes - note it (`hk note`) and deprioritise them "
+            "5. Watch for measurement problems: if a made-up random name under a root resolves, that root has "
+            "wildcard DNS and most 'hosts' are echoes - note it (`hk note`) and deprioritise them "
             "(`hk priority <host> 10`). Use `hk stats` to sanity-check your numbers.\n"
-            "Do NOT make HTTP requests to the hosts here (that is the next phase) and do NOT port scan. "
-            "Finish when the in-scope hosts are resolved and classified."
+            "Do NOT make HTTP requests to the hosts here (that is the next phase) and do NOT port scan.\n"
+            "Write ./handoff.md ONLY when every in-scope root is in ./done-roots.txt and its hosts are "
+            "resolved and classified - that marks this phase complete. If you run low on turns before then, "
+            "stop cleanly WITHOUT writing handoff.md; your ./done-roots.txt progress is saved and you will be "
+            "continued automatically."
         )
 
     def check(self, ctx: Context, store: A.Assets) -> PhaseResult:

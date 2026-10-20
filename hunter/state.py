@@ -223,6 +223,16 @@ class State:
         row = self.db.execute("SELECT phase_id, need FROM blockers WHERE id=?", (blocker_id,)).fetchone()
         self.event(f"blocker_{status.lower()}", row["phase_id"] if row else None, row["need"] if row else "")
 
+    def clear_phase_blockers(self, phase_id: str) -> int:
+        """Close any open blockers a phase raised, so a re-run re-raises fresh
+        ones instead of leaving near-duplicates (e.g. an owner string that was
+        worded slightly differently last time). Returns how many were closed."""
+        rows = self.db.execute(
+            "SELECT id FROM blockers WHERE phase_id=? AND status='OPEN'", (phase_id,)).fetchall()
+        for row in rows:
+            self.db.execute("UPDATE blockers SET status='RESOLVED', closed_at=? WHERE id=?", (now(), row["id"]))
+        return len(rows)
+
     # events and agent runs -------------------------------------------------
     def event(self, kind: str, phase_id: str | None, message: str) -> None:
         self.db.execute(

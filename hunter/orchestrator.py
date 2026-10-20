@@ -90,6 +90,8 @@ class Orchestrator:
             self._announce_start()
             while True:
                 self._pass()
+                if self._until:
+                    break  # a phase-by-phase run stops at its boundary, never waits on blockers
                 self._operator_sync()
                 if self._rerun_due:
                     self._rerun_due = False
@@ -262,6 +264,19 @@ class Orchestrator:
                 unmet.append(required)
         return unmet
 
+    def _progress_count(self) -> int:
+        """A cheap fingerprint of how much the inventory holds. If a PARTIAL
+        phase increased it, the phase is still making progress and is worth
+        continuing (recon on a huge program needs several passes)."""
+        assert self.state is not None
+        total = 0
+        for table in ("hosts", "services", "endpoints", "leads", "findings"):
+            try:
+                total += self.state.db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            except Exception:
+                pass
+        return total
+
     def _run_phase(self, phase: Phase) -> None:
         assert self.state is not None and self.ctx is not None
         unmet = self._unmet_requirements(phase)
@@ -271,28 +286,47 @@ class Orchestrator:
             self._log(f"--- {phase.id}: skipped, waiting for {', '.join(unmet)}")
             return
         self.ran.add(phase.id)
-        self.ctx.phase_id = phase.id
-        self.state.start_phase(phase.id, phase.version)
+        # A re-run re-raises its own blockers; close the old ones first so they
+        # do not pile up as duplicates across runs.
+        self.state.clear_phase_blockers(phase.id)
         self._log(f"--- {phase.id}: {phase.name}")
-        started = self.clock()
-        try:
-            result = phase.run(self.ctx)
-            if not isinstance(result, PhaseResult):
-                raise TypeError(f"{phase.id} returned {type(result).__name__}, expected PhaseResult")
-        except (KeyboardInterrupt, _Stop, AgentFatalError, ConfigError):
-            raise
-        except Exception as exc:  # a bug or tool crash in one phase must not end the run
-            trace = traceback.format_exc()
-            self._write_trace(phase.id, trace)
-            result = PhaseResult(st.FAILED, f"{type(exc).__name__}: {exc}")
-            self.notifier.send(f"Phase failed: {phase.id}",
-                               f"{type(exc).__name__}: {exc}\nThe run continues with the next phase. "
-                               f"Details: {self.target.logs / 'errors'}", "error", target=self.target.name)
-        finally:
-            self.ctx.phase_id = None
-        self.state.finish_phase(phase.id, result.status, result.summary)
-        minutes = (self.clock() - started) / 60
-        self._log(f"    {phase.id} -> {result.status} ({minutes:.1f} min): {result.summary}")
+        # Keep working a PARTIAL phase in the same run while it still adds to the
+        # inventory, so a big phase (recon on a huge program) finishes instead of
+        # stranding everything that depends on it. Bounded by a hard cap and by
+        # "no new progress", and never loops on a phase waiting for the operator.
+        hard_cap = 12
+        for attempt in range(1, hard_cap + 1):
+            self.ctx.phase_id = phase.id
+            before = self._progress_count()
+            self.state.start_phase(phase.id, phase.version)
+            started = self.clock()
+            try:
+                result = phase.run(self.ctx)
+                if not isinstance(result, PhaseResult):
+                    raise TypeError(f"{phase.id} returned {type(result).__name__}, expected PhaseResult")
+            except (KeyboardInterrupt, _Stop, AgentFatalError, ConfigError):
+                raise
+            except Exception as exc:  # a bug or tool crash in one phase must not end the run
+                trace = traceback.format_exc()
+                self._write_trace(phase.id, trace)
+                result = PhaseResult(st.FAILED, f"{type(exc).__name__}: {exc}")
+                self.notifier.send(f"Phase failed: {phase.id}",
+                                   f"{type(exc).__name__}: {exc}\nThe run continues with the next phase. "
+                                   f"Details: {self.target.logs / 'errors'}", "error", target=self.target.name)
+            finally:
+                self.ctx.phase_id = None
+            self.state.finish_phase(phase.id, result.status, result.summary)
+            minutes = (self.clock() - started) / 60
+            self._log(f"    {phase.id} -> {result.status} ({minutes:.1f} min): {result.summary}")
+            if result.status != st.PARTIAL:
+                return
+            if any(b["phase_id"] == phase.id for b in self.state.open_blockers()):
+                return  # needs the operator; the end-of-run blocker wait handles it
+            after = self._progress_count()
+            if after <= before:
+                return  # partial and not advancing: stop, do not spin
+            if attempt < hard_cap:
+                self._log(f"    {phase.id}: partial but still finding things ({before} -> {after}); continuing")
 
     def _write_trace(self, phase_id: str, trace: str) -> None:
         folder = self.target.logs / "errors"
