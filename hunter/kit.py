@@ -58,6 +58,10 @@ Built-in checks
   hk baseline                      record each new site's "not found" answer
   hk check-content <url>           does a sensitive file really contain what its name says
   hk takeover                      re-check subdomain-takeover candidates
+  hk unlock <url>                  try path/header bypasses on a 401/403 (records a lead if one works)
+  hk secrets <file|dir>            scan for leaked keys/tokens (reports kinds, values masked)
+  hk vhost <ip-url>                find virtual hosts on an IP (Host-header fuzz, in-scope names)
+  hk cache <url>                   probe web-cache poisoning / deception (detect-only, records a lead)
   hk wordlist                      path of the built-in discovery list
 
 Reporting
@@ -370,6 +374,132 @@ def cmd_takeover(kit: Kit, args) -> int:
     return 0
 
 
+def cmd_unlock(kit: Kit, args) -> int:
+    from . import unlock
+    if not kit.scope().decide_url(args.url).allowed:
+        print("BLOCKED: not in scope")
+        return 1
+    opener = webprobe.opener_through(os.environ.get("HUNTER_PROXY", ""), os.environ.get("SSL_CERT_FILE"))
+    result = unlock.probe(args.url, opener)
+    if args.json:
+        print(json.dumps(result, indent=1))
+        return 0
+    if result.get("note"):
+        print(result["note"])
+        return 0
+    bypasses = result["bypasses"]
+    if not bypasses:
+        print(f"{args.url}: baseline {result['baseline'].get('status')}, "
+              f"no bypass in {result['tried']} variants")
+        return 0
+    for b in bypasses:
+        hdr = f"  headers={b['headers']}" if b["headers"] else ""
+        print(f"BYPASS {b['status']}: {b['how']} -> {b['url']} (len {b['len']}){hdr}")
+        # Record a lead so later phases / the operator see it.
+        kit.store.add_lead("403-bypass", b["url"], f"ai:{kit.phase}",
+                           f"{result['baseline'].get('status')} bypassed via {b['how']} -> {b['status']}",
+                           status="signature-match")
+    return 0
+
+
+def cmd_cache(kit: Kit, args) -> int:
+    from . import cachecheck
+    if not kit.scope().decide_url(args.url).allowed:
+        print("BLOCKED: not in scope")
+        return 1
+    opener = webprobe.opener_through(os.environ.get("HUNTER_PROXY", ""), os.environ.get("SSL_CERT_FILE"))
+    result = cachecheck.probe(args.url, opener)
+    if args.json:
+        print(json.dumps(result, indent=1))
+        return 0
+    found = False
+    for p in result["poisoning"]:
+        found = True
+        print(f"CACHE-POISONING candidate: {p['header']} reflected"
+              f"{' + cacheable' if p['cacheable'] else ''} ({p['cache_headers'] or 'no cache headers'})")
+        kit.store.add_lead("cache-poisoning", args.url, f"ai:{kit.phase}",
+                           f"unkeyed {p['header']} reflected; {p['note']}", status="unverified")
+    for d in result["deception"]:
+        found = True
+        print(f"CACHE-DECEPTION candidate: suffix {d['suffix']} -> dynamic page cacheable "
+              f"({d['cache_headers'] or 'no cache headers'})")
+        kit.store.add_lead("cache-deception", args.url + d["suffix"], f"ai:{kit.phase}",
+                           d["note"], status="unverified")
+    if not found:
+        print(f"{args.url}: no cache poisoning/deception signal")
+    return 0
+
+
+def cmd_vhost(kit: Kit, args) -> int:
+    from . import vhost
+    scope = kit.scope()
+    # The IP (or ip:port) must be in scope.
+    host = args.ip_url.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+    if not scope.decide(host).allowed:
+        print(f"BLOCKED: {host} is not in scope")
+        return 1
+    ip_url = args.ip_url if "://" in args.ip_url else f"http://{args.ip_url}"
+    # Candidate host names: in-scope known hosts + wildcard roots + a few common
+    # names under each root. Only in-scope names are tried.
+    candidates: list[str] = []
+    roots = scope.wildcard_roots()
+    for row in kit.store.hosts(scope=A.IN):
+        candidates.append(row["host"])
+    common = ("internal", "staging", "stage", "dev", "preprod", "uat", "test",
+              "admin", "api", "corp", "intranet", "portal", "vpn", "jenkins", "git")
+    for root in roots:
+        candidates.extend(f"{c}.{root}" for c in common)
+    # Deduplicate, keep only in-scope, cap to a sane number.
+    seen, final = set(), []
+    for name in candidates:
+        name = name.strip().lower()
+        if name and name not in seen and scope.decide(name).allowed:
+            seen.add(name)
+            final.append(name)
+    final = final[:400]
+    opener = webprobe.opener_through(os.environ.get("HUNTER_PROXY", ""), os.environ.get("SSL_CERT_FILE"))
+    result = vhost.probe(ip_url, final, opener)
+    if args.json:
+        print(json.dumps(result, indent=1))
+        return 0
+    if result.get("note"):
+        print(result["note"])
+        return 0
+    vhosts = result["vhosts"]
+    if not vhosts:
+        print(f"{ip_url}: no distinct virtual host in {result['tried']} in-scope names")
+        return 0
+    for v in vhosts:
+        print(f"VHOST {v['status']}: {v['host']} on {ip_url} (len {v['len']})")
+        kit.store.add_lead("vhost", f"http://{v['host']}/", f"ai:{kit.phase}",
+                           f"distinct virtual host on {ip_url} (status {v['status']})",
+                           status="signature-match")
+    return 0
+
+
+def cmd_secrets(kit: Kit, args) -> int:
+    from . import secretscan
+    root = Path(args.path).expanduser()
+    if not root.exists():
+        print(f"no such file or directory: {root}")
+        return 1
+    results = secretscan.scan_path(root)
+    if args.json:
+        print(json.dumps(results, indent=1))
+        return 0
+    if not results:
+        print("no secrets detected")
+        return 0
+    for entry in results:
+        kinds = ", ".join(sorted({h["kind"] for h in entry["hits"]}))
+        print(f"{entry['file']}: {kinds}")
+        for h in entry["hits"]:
+            print(f"    {h['kind']}: {h['masked']}")
+    print(f"\n{len(results)} file(s) with secrets. Record the real ones with "
+          f"`hk add lead secret-in-js <url> --evidence \"<kind>\"` (kind only, never the value).")
+    return 0
+
+
 def cmd_finding(kit: Kit, args) -> int:
     from .review import mask
     store = kit.store
@@ -524,6 +654,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("baseline").set_defaults(func=cmd_baseline)
     a = sub.add_parser("check-content"); a.add_argument("url"); a.set_defaults(func=cmd_check_content)
     sub.add_parser("takeover").set_defaults(func=cmd_takeover)
+    a = sub.add_parser("unlock"); a.add_argument("url"); a.add_argument("--json", action="store_true")
+    a.set_defaults(func=cmd_unlock)
+    a = sub.add_parser("secrets"); a.add_argument("path"); a.add_argument("--json", action="store_true")
+    a.set_defaults(func=cmd_secrets)
+    a = sub.add_parser("vhost"); a.add_argument("ip_url"); a.add_argument("--json", action="store_true")
+    a.set_defaults(func=cmd_vhost)
+    a = sub.add_parser("cache"); a.add_argument("url"); a.add_argument("--json", action="store_true")
+    a.set_defaults(func=cmd_cache)
     a = sub.add_parser("wordlist")
     a.add_argument("--kind"); a.add_argument("--extensions"); a.add_argument("--list", action="store_true")
     a.set_defaults(func=cmd_wordlist)

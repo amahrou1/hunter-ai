@@ -31,6 +31,9 @@ class AIProbePhase(AgentPhase):
                      "targets it prints."),
             MustStep("M3", "Run `hk baseline` so every service has its not-found answer (later fuzzing needs it)."),
             MustStep("M4", "Re-check takeover candidates with `hk takeover` and HTTP-probe any flagged host."),
+            MustStep("M5", "Virtual-host enumeration: for each distinct in-scope IP with a live web "
+                     "service, run `hk vhost <ip-url>` to surface internal/staging apps that answer only to "
+                     "a specific Host header (few hunters do this - it finds hidden surface)."),
         ]
 
     def task(self, ctx: Context) -> str:
@@ -54,6 +57,11 @@ class AIProbePhase(AgentPhase):
             "see if the provider shows an unclaimed page.\n"
             "6. Sanity-check with `hk services`: if the same page repeats on many hosts (a load-balancer "
             "default), deprioritise them (`hk priority <host> 10`) and note it.\n"
+            "7. VIRTUAL HOSTS: for each distinct in-scope IP that has a live web service, run "
+            "`hk vhost http://<ip>/` (and the https/port variants where relevant). It fuzzes the Host header "
+            "with in-scope names and reports any that answer with a DIFFERENT page than the default - those "
+            "are internal/staging apps not in DNS. It records each as a vhost lead and only tries in-scope "
+            "names, so anything it finds is in scope to test later.\n"
             "Use `hk progress \"probing\" <done> <total> hosts` as you go. Finish when `hk hosts --unprobed` "
             "is empty and baselines are built. Summarise the live services in ./handoff.md."
         )
