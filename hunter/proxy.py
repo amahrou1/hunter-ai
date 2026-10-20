@@ -76,6 +76,9 @@ class ScopeProxy:
             if host not in self.passthrough:
                 self.passthrough.append(host)
         self.body_bytes = int(cfg.get("log_body_bytes", 4096))
+        logs_cfg = settings.get("logs", {})
+        self.log_max_mb = int(logs_cfg.get("traffic_max_mb", 50))
+        self.log_keep = int(logs_cfg.get("traffic_keep", 3))
         self.confdir = paths.config_dir() / "mitmproxy"
         self.process: subprocess.Popen | None = None
         self._log_handle = None
@@ -137,6 +140,8 @@ class ScopeProxy:
             "--set", f"hunter_scope={self.scope_file}",
             "--set", f"hunter_log={self.traffic_log}",
             "--set", f"hunter_body_bytes={self.body_bytes}",
+            "--set", f"hunter_log_max_mb={self.log_max_mb}",
+            "--set", f"hunter_log_keep={self.log_keep}",
             "--set", f"hunter_passthrough={','.join(self.passthrough)}",
             # Targets often use self-signed or internal certificates.
             "--set", "ssl_insecure=true",

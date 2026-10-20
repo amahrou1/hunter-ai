@@ -127,6 +127,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         # Soft memory cap per external tool (MB). The VPS has 8 GB.
         "mem_mb": 1500,
     },
+    # Keep a run's on-disk logs from filling the VPS disk (see logkeep.py).
+    "logs": {
+        # Whole <target>/output/logs tree: prune oldest *compressed* logs past this.
+        "budget_mb": 2000,
+        # Gzip a finished phase's transcript/tool file once it is at least this big.
+        "compress_after_mb": 5,
+        # Live proxy traffic.jsonl: rotate past this size, keeping this many rolls.
+        "traffic_max_mb": 50,
+        "traffic_keep": 3,
+    },
     "proxy": {
         "port": 0,  # 0 = pick a free port per run
         "log_body_bytes": 4096,
@@ -147,6 +157,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "otx.alienvault.com", "api.hackertarget.com", "rapiddns.io", "dns.bufferover.run",
             "urlscan.io", "dns.google", "cloudflare-dns.com", "github.com", "api.github.com",
             "raw.githubusercontent.com", "pypi.org", "files.pythonhosted.org", "registry.npmjs.org",
+            # www.npmjs.com (package pages) and grep.app (public code search) are
+            # read by the dependency-confusion and dorking phases for safe
+            # discovery; they are infrastructure, never targets.
+            "www.npmjs.com", "grep.app",
             "rubygems.org", "api.rubygems.org", "packagist.org", "repo.packagist.org",
             "services.nvd.nist.gov", "osv.dev", "api.osv.dev",
         ],

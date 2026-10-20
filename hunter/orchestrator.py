@@ -25,6 +25,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable
 
+from . import logkeep
 from . import state as st
 from .agent import AgentFatalError
 from .config import ConfigError
@@ -330,6 +331,10 @@ class Orchestrator:
             self.state.finish_phase(phase.id, result.status, result.summary)
             minutes = (self.clock() - started) / 60
             self._log(f"    {phase.id} -> {result.status} ({minutes:.1f} min): {result.summary}")
+            # Keep the logs tree bounded: compress finished phases' transcripts and
+            # prune oldest compressed logs past the budget. Best-effort; never
+            # touches the current phase's files or the live traffic.jsonl.
+            logkeep.tidy(self.target.logs, self.settings, exclude_phase=phase.id)
             if result.status != st.PARTIAL:
                 return
             if any(b["phase_id"] == phase.id for b in self.state.open_blockers()):

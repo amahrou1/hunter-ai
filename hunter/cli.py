@@ -185,6 +185,18 @@ def cmd_stop(args) -> int:
 
 def cmd_logs(args) -> int:
     target = _load_target(args.target)
+    if getattr(args, "size", False):
+        from . import config, logkeep
+        settings = config.load_settings()
+        before = logkeep.dir_size_mb(target.logs)
+        _print(f"Logs for '{target.name}': {before:.0f} MB in {target.logs}")
+        _print("Compressing finished-phase transcripts and pruning past the budget ...")
+        logkeep.tidy(target.logs, settings)
+        after = logkeep.dir_size_mb(target.logs)
+        _print(f"Now {after:.0f} MB (freed {max(0.0, before - after):.0f} MB).")
+        budget = int((settings.get("logs") or {}).get("budget_mb", logkeep.DEFAULT_BUDGET_MB))
+        _print(f"Budget: {budget} MB (change in settings.json under \"logs\").")
+        return 0
     log = target.logs / "run.log"
     if not log.exists():
         _print(f"No log yet for '{target.name}'.")
@@ -709,6 +721,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("target")
         if name in ("run", "start", "resume"):
             p.add_argument("--until", help="stop after this phase, e.g. 02-recon (for testing phase by phase)")
+        if name == "logs":
+            p.add_argument("--size", action="store_true",
+                           help="show the size of this target's logs and compress/prune them now")
         p.set_defaults(func=func)
     p = sub.add_parser("status")
     p.add_argument("target", nargs="?")

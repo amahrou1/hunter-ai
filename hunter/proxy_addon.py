@@ -81,6 +81,10 @@ class ScopeGuard:
         self.bucket: TokenBucket | None = None
         self.passthrough: set[str] = set()
         self.log_handle = None
+        self.log_path: Path | None = None
+        self.log_bytes = 0            # bytes in the current traffic.jsonl
+        self.log_max_bytes = 0        # 0 = no rotation
+        self.log_keep = 3             # how many rolled traffic.N.jsonl to keep
         self.blocked = 0
         self.allowed = 0
 
@@ -90,16 +94,60 @@ class ScopeGuard:
         loader.add_option("hunter_log", str, "", "Path of the traffic.jsonl log")
         loader.add_option("hunter_body_bytes", int, 4096, "Bytes of request/response body to log")
         loader.add_option("hunter_passthrough", str, "", "Comma-separated infrastructure hosts")
+        loader.add_option("hunter_log_max_mb", int, 50,
+                          "Rotate traffic.jsonl when it passes this many MB (0 = never)")
+        loader.add_option("hunter_log_keep", int, 3,
+                          "How many rotated traffic.N.jsonl files to keep")
 
     def configure(self, updated) -> None:
         if "hunter_passthrough" in updated:
             self.passthrough = {h.strip().lower() for h in ctx.options.hunter_passthrough.split(",") if h.strip()}
         if "hunter_scope" in updated:
             self._reload(force=True)
+        if "hunter_log_max_mb" in updated:
+            self.log_max_bytes = max(0, int(ctx.options.hunter_log_max_mb)) * 1_000_000
+        if "hunter_log_keep" in updated:
+            self.log_keep = max(1, int(ctx.options.hunter_log_keep))
         if "hunter_log" in updated and ctx.options.hunter_log:
             path = Path(ctx.options.hunter_log)
             path.parent.mkdir(parents=True, exist_ok=True)
+            self.log_path = path
             self.log_handle = path.open("a", encoding="utf-8", buffering=1)
+            try:
+                self.log_bytes = path.stat().st_size
+            except OSError:
+                self.log_bytes = 0
+
+    def _rotate_log(self) -> None:
+        """Roll traffic.jsonl -> traffic.1.jsonl (shifting older rolls up) and
+        start a fresh one, dropping the oldest beyond log_keep. Keeps the live
+        proxy log bounded during a long run; failures are swallowed so logging
+        never disrupts traffic."""
+        if self.log_handle is None or self.log_path is None:
+            return
+        try:
+            self.log_handle.close()
+        except OSError:
+            pass
+        base = self.log_path
+        try:
+            # Drop the oldest, shift the rest up: traffic.2 -> traffic.3, etc.
+            oldest = base.with_name(f"{base.stem}.{self.log_keep}{base.suffix}")
+            if oldest.exists():
+                oldest.unlink()
+            for i in range(self.log_keep - 1, 0, -1):
+                src = base.with_name(f"{base.stem}.{i}{base.suffix}")
+                if src.exists():
+                    src.replace(base.with_name(f"{base.stem}.{i + 1}{base.suffix}"))
+            if base.exists():
+                base.replace(base.with_name(f"{base.stem}.1{base.suffix}"))
+        except OSError:
+            pass
+        try:
+            self.log_handle = base.open("a", encoding="utf-8", buffering=1)
+            self.log_bytes = 0
+        except OSError:
+            self.log_handle = None
 
     def http_connect(self, flow: http.HTTPFlow) -> None:
         host = flow.request.host
@@ -219,7 +267,11 @@ class ScopeGuard:
             "resp_len": len(resp.raw_content or b"") if resp and resp.raw_content is not None else None,
             "resp_body": None if blocked else self._body(resp),
         }
-        self.log_handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
+        self.log_handle.write(line)
+        self.log_bytes += len(line.encode("utf-8", "replace"))
+        if self.log_max_bytes and self.log_bytes >= self.log_max_bytes:
+            self._rotate_log()
 
 
 addons = [ScopeGuard()]

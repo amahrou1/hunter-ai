@@ -58,6 +58,15 @@ def check_system(report: Report) -> None:
     usage = shutil.disk_usage(str(paths.home()))
     free_gb = usage.free / 1e9
     report.add(PASS if free_gb >= 20 else WARN, "Disk space", f"{free_gb:.0f} GB free")
+
+    from . import logkeep
+    big = [(t.name, logkeep.dir_size_mb(t.logs)) for t in target_mod.list_targets()]
+    heavy = [(n, mb) for n, mb in big if mb >= 1000]
+    if heavy:
+        worst = ", ".join(f"{n} ({mb:.0f} MB)" for n, mb in sorted(heavy, key=lambda x: -x[1]))
+        report.add(WARN, "Log size", f"large logs: {worst}. Compress/prune with: hunt logs <target> --size")
+    elif big:
+        report.add(PASS, "Log size", f"{sum(mb for _, mb in big):.0f} MB across {len(big)} targets")
     try:
         with open("/proc/meminfo", encoding="utf-8") as handle:
             info = dict(line.split(":", 1) for line in handle if ":" in line)
