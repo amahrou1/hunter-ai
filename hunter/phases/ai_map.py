@@ -19,6 +19,7 @@ class AIMapPhase(AgentPhase):
     build_step = 4
     requires = ("00-intake", "03-probe")
     role = "mapper"
+    prior_scope = "hosts"
     max_turns = 90
     timeout_minutes = 300
 

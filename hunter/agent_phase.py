@@ -97,6 +97,18 @@ A previous automation run left its results in {dir}. Use it as REFERENCE AND HIN
 - It can be large: grep/scan it selectively, do not cat huge files into your context.
 """
 
+# A TIGHT prior block for recon/mapping phases: only mine it for KNOWN HOSTS, and
+# only quickly - never get pulled into reading old findings/notes. The full
+# mining (endpoints, params, leads, past findings) belongs to the testing phases.
+PRIOR_HELP_HOSTS = """
+== PRIOR AUTOMATION OUTPUT (hosts only, reference) ==
+A previous run left results in {dir}. For THIS phase, use it ONLY to harvest known
+host/subdomain names: `grep -rhoE '[a-z0-9.-]+\\.[a-z]+' {dir} | sort -u`, then add the
+in-scope ones with `hk add host`. Do NOT read its findings, notes or testing here - that
+is for later phases. This is a quick hint source, not your main task; your main task is the
+fresh enumeration below.
+"""
+
 MAILBOX_HELP = """Temporary mailboxes (mail.tm) for sign-up, password-reset and OTP flows, and for making
 attacker/victim accounts for access-control testing. Use them ONLY when the program allows signing up
 with any email; if the policy requires a platform relay address (Intigriti @intigriti.me, Bugcrowd
@@ -153,6 +165,11 @@ class AgentPhase(Phase):
     # checker allowlist), and secrets to export into the agent env.
     allow_hosts: tuple[str, ...] = ()
     secret_env: dict[str, str] = {}
+    # How much of a prior-automation folder this phase mines: "full" (hosts,
+    # endpoints, params, leads, findings - for testing phases) or "hosts" (only
+    # known host names, a quick hint - for recon/mapping, so the agent is not
+    # pulled off its enumeration job into reading old findings) or "none".
+    prior_scope: str = "full"
 
     def task(self, ctx: Context) -> str:  # pragma: no cover - interface
         raise NotImplementedError
@@ -289,9 +306,14 @@ class AgentPhase(Phase):
 
     def _prior(self, ctx: Context) -> str:
         """Reference block pointing the agent at a previous automation's output
-        (if the operator dropped one in the target folder). Empty otherwise."""
+        (if the operator dropped one in the target folder). Scoped per phase so
+        recon/mapping get only a tight hosts-only hint and are not pulled off
+        task into reading old findings. Empty otherwise."""
         prior = ctx.target.prior_dir()
-        return PRIOR_HELP.format(dir=prior) if prior else ""
+        if not prior or self.prior_scope == "none":
+            return ""
+        template = PRIOR_HELP_HOSTS if self.prior_scope == "hosts" else PRIOR_HELP
+        return template.format(dir=prior)
 
     def _infra(self, ctx: Context) -> str:
         """Your own testing infrastructure, offered to the agent and gated on the

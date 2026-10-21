@@ -22,6 +22,7 @@ class AIReconPhase(AgentPhase):
     build_step = 4
     requires = ("00-intake",)
     role = "scanner"
+    prior_scope = "hosts"
     max_turns = 200
     timeout_minutes = 180
 

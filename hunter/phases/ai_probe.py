@@ -20,6 +20,7 @@ class AIProbePhase(AgentPhase):
     build_step = 4
     requires = ("00-intake", "02-recon")
     role = "prober"
+    prior_scope = "hosts"
     max_turns = 70
     timeout_minutes = 180
 
