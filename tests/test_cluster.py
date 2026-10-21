@@ -1,85 +1,189 @@
-"""Infrastructure-clone collapsing: big same-backend groups park to a few
-representatives; small/diverse groups and behavioural outliers are left alone."""
+"""Infrastructure-clone collapsing, evidence-based. Covers the real cases:
+SBB event microsites, Binance apex wildcard clones, and the failure modes we
+must NOT hit (WAF/redirect pages, distinct APIs, mixed-port hosts, protected
+hosts). Proofs: wildcard-echo (A, auto), platform-instance (B, agent-reviewed),
+exact-dup (C, auto)."""
 
 from __future__ import annotations
+
+import json
 
 from hunter import cluster
 
 
-def _svc(host, status=200, server="nginx", tech="", ctype="text/html",
-         title="Event", length=5000):
-    return {"host": host, "status": status, "server": server, "tech": tech,
-            "content_type": ctype, "title": title, "content_length": length}
+def _svc(sid, host, status=200, server="nginx", tech="", ctype="text/html",
+         title="Event", length=5000, body_hash=None, favicon="f1",
+         addresses=("10.0.0.1",), cname="", port=443):
+    return {"id": sid, "host": host, "status": status, "server": server, "tech": tech,
+            "content_type": ctype, "title": title, "content_length": length,
+            "body_hash": body_hash or f"h{sid}", "favicon_hash": favicon,
+            "addresses": json.dumps(list(addresses)), "cname": cname, "port": port}
 
 
-def test_big_clone_group_is_collapsed_to_representatives():
-    # 50 event microsites, same backend signature, differing only by event name
-    services = [_svc(f"event-{i}.event.sbb.ch", title=f"Event {i} - SBB", length=5000 + i)
-                for i in range(50)]
-    report = cluster.plan(services, min_cluster=10, keep=3)
-    assert len(report["clusters"]) == 1
-    c = report["clusters"][0]
-    assert c["parent"] == "event.sbb.ch"
-    assert c["size"] == 50
-    assert len(c["kept"]) == 3
-    assert report["parked"] == 47          # 50 - 3 kept
+# ---------------------------------------------------------------- Proof B (SBB)
+def test_sbb_event_microsites_are_a_review_group_not_auto_parked():
+    # 50 event microsites: same infra, server, favicon, 200, shared title word
+    # "sbb", but different event names -> platform-instance (agent-reviewed).
+    svcs = [_svc(i, f"event-{i}.event.sbb.ch", title=f"Event {i} - SBB", length=5000 + i)
+            for i in range(50)]
+    rep = cluster.plan(svcs, apex_roots={"sbb.ch"})
+    assert rep["auto"] == []                       # NOT auto-parked (judgment)
+    assert len(rep["review"]) == 1
+    g = rep["review"][0]
+    assert g["parent"] == "event.sbb.ch"
+    assert g["size"] == 50
+    assert len(g["kept"]) == 3
+    assert "sbb" in g["stable_title_words"]
 
 
-def test_small_group_is_left_alone():
-    services = [_svc(f"a{i}.event.sbb.ch") for i in range(5)]  # below min_cluster
-    report = cluster.plan(services, min_cluster=10, keep=3)
-    assert report["clusters"] == []
-    assert report["parked"] == 0
+# ---------------------------------------------------------------- Proof A (Binance)
+def test_binance_apex_clones_auto_park_only_as_wildcard_echoes():
+    # machine-labelled apex clones; they are echoes (random names match them)
+    svcs = [_svc(i, f"0-{i}.binance.com", title="", body_hash="SAME") for i in range(30)]
+    echoes = {s["host"] for s in svcs}
+    rep = cluster.plan(svcs, echo_hosts=echoes, apex_roots={"binance.com"})
+    assert len(rep["auto"]) == 1
+    assert rep["auto"][0]["proof"] == "wildcard-echo"
+    assert len(rep["auto_parked_services"]) == 30
 
 
-def test_diverse_hosts_under_same_parent_are_not_collapsed():
-    # same parent, but genuinely different apps (different server/title/status)
-    services = [
-        _svc("api.acme.com", server="nginx", title="API"),
-        _svc("shop.acme.com", server="apache", title="Shop", status=200, length=90000),
-        _svc("admin.acme.com", server="iis", title="Admin", status=403, length=200),
-        _svc("blog.acme.com", server="nginx", title="Blog", length=12000),
-    ]
-    report = cluster.plan(services, min_cluster=3, keep=1)
-    # each has a distinct signature -> no group reaches min_cluster
-    assert report["parked"] == 0
+def test_apex_non_machine_labels_are_never_grouped_by_template():
+    # real distinct apps directly under the apex: shop, careers, status, help...
+    svcs = [_svc(i, h + ".binance.com", title="Portal")
+            for i, h in enumerate(["shop", "careers", "status", "help", "news",
+                                    "blog", "about", "jobs", "press", "legal",
+                                    "invest", "learn"])]
+    rep = cluster.plan(svcs, apex_roots={"binance.com"})
+    # same signature would group them, but the apex rule needs machine labels
+    assert rep["review"] == []
+    assert rep["auto"] == []
+
+
+def test_apex_machine_labels_without_echo_can_be_review_group():
+    # machine-labelled apex clones, same infra/fingerprint, but NOT proven echoes
+    svcs = [_svc(i, f"0-{i}.binance.com", title="") for i in range(20)]
+    rep = cluster.plan(svcs, apex_roots={"binance.com"})
+    # no echo proof -> not auto; machine-label group -> offered for review
+    assert rep["auto"] == []
+    assert len(rep["review"]) == 1
+    assert all(cluster.is_machine_label(h) for h in rep["review"][0]["sample_parked"])
+
+
+# ---------------------------------------------------------------- must-NOT cases
+def test_different_apps_behind_same_waf_page_are_not_grouped():
+    # same 403 body, but DIFFERENT infrastructure -> not one backend
+    svcs = [_svc(i, f"app{i}.acme.com", status=403, body_hash="WAFPAGE",
+                 addresses=(f"10.0.{i}.1",)) for i in range(20)]
+    rep = cluster.plan(svcs, apex_roots={"acme.com"})
+    assert rep["auto"] == [] and rep["review"] == []   # 403 + distinct infra
+
+
+def test_redirects_are_not_grouped():
+    # 302 login redirects, same target - status != 200 so never a B/C group
+    svcs = [_svc(i, f"x{i}.acme.com", status=302, body_hash="REDIR") for i in range(20)]
+    rep = cluster.plan(svcs, apex_roots={"acme.com"})
+    assert rep["auto"] == [] and rep["review"] == []
+
+
+def test_distinct_endpoints_empty_title_need_exact_dup_not_template():
+    # empty titles, same infra, but DIFFERENT bodies -> not exact-dup, and empty
+    # title gives no stable words -> not a platform-instance group either.
+    # host names under a non-apex parent so the apex rule is not the reason.
+    svcs = [_svc(i, f"n{i}.svc.acme.com", title="", ctype="application/json",
+                 body_hash=f"different{i}") for i in range(20)]
+    rep = cluster.plan(svcs, apex_roots={"acme.com"})
+    assert rep["review"] == []
+    assert rep["auto"] == []
+
+
+def test_identical_endpoints_exact_dup_auto_parks():
+    # identical JSON bodies, same infra -> exact-dup (Proof C) auto-parks.
+    svcs = [_svc(i, f"n{i}.svc.acme.com", title="", ctype="application/json",
+                 body_hash="IDENTICAL") for i in range(20)]
+    rep = cluster.plan(svcs, apex_roots={"acme.com"})
+    assert len(rep["auto"]) == 1
+    assert rep["auto"][0]["proof"] == "exact-dup"
 
 
 def test_behavioural_outlier_survives_inside_a_clone_family():
-    # 40 identical clones + 1 that behaves differently (different status/length)
-    services = [_svc(f"e{i}.event.sbb.ch", length=5000) for i in range(40)]
-    outlier = _svc("secret-admin.event.sbb.ch", status=200, title="Admin Panel",
-                   length=250, server="express")
-    services.append(outlier)
-    report = cluster.plan(services, min_cluster=10, keep=3)
-    # the outlier has a different signature -> not in the parked set
-    assert "secret-admin.event.sbb.ch" not in report["parked_hosts"]
+    svcs = [_svc(i, f"e{i}.event.sbb.ch", title=f"Event {i} - SBB", length=5000)
+            for i in range(40)]
+    # an admin panel hiding among the event clones: different length/title/server
+    svcs.append(_svc(999, "secret-admin.event.sbb.ch", title="Admin Console",
+                     length=250, server="express", favicon="f9"))
+    rep = cluster.plan(svcs, apex_roots={"sbb.ch"})
+    g = rep["review"][0]
+    all_parked = []
+    for grp in rep["review"]:
+        all_parked += grp["sample_parked"]
+    assert "secret-admin.event.sbb.ch" not in all_parked
+    assert 999 not in g["parked_candidate_ids"]
 
 
-def test_signature_ignores_hostname_label():
-    a = _svc("alpha.event.sbb.ch", title="Event A", length=5000)
-    b = _svc("beta.event.sbb.ch", title="Event B", length=5000)
-    # same template/parent/server/status/length-bucket -> same signature
-    assert cluster.signature(a) == cluster.signature(b)
+# ---------------------------------------------------------------- protection
+def test_protected_hosts_are_never_parked():
+    svcs = [_svc(i, f"e{i}.event.sbb.ch", title=f"Event {i} - SBB") for i in range(40)]
+    # mark one as protected (policy-listed / focused / has a lead)
+    rep = cluster.plan(svcs, protected={"e5.event.sbb.ch"}, apex_roots={"sbb.ch"})
+    # protected host must not be a parking candidate in ANY group
+    for g in rep["review"] + rep["auto"]:
+        assert 5 not in g.get("parked_candidate_ids", [])
+        assert "e5.event.sbb.ch" not in g.get("sample_parked", [])
 
 
-def test_title_template_strips_dates_and_numbers():
-    assert cluster._title_template("Event 2024-03-15 #4821") == \
-           cluster._title_template("Event 2023-11-02 #9100")
+def test_important_label_hosts_are_never_parked():
+    svcs = [_svc(i, f"e{i}.event.sbb.ch", title=f"Event {i} - SBB") for i in range(40)]
+    svcs.append(_svc(999, "api.event.sbb.ch", title="Event X - SBB"))  # api => important
+    rep = cluster.plan(svcs, apex_roots={"sbb.ch"})
+    g = rep["review"][0]
+    assert 999 not in g["parked_candidate_ids"]
 
 
-def test_apply_parks_in_db():
-    class FakeStore:
-        def __init__(self):
-            self.parked: list[str] = []
+def test_important_label_only_checks_leftmost():
+    # dev.api is in the parent, but the leftmost label 0-2-4 is machine -> not protected
+    assert not cluster.is_important_label("0-2-4.dev.api.binance.com")
+    assert cluster.is_important_label("api.binance.com")
+    assert cluster.is_important_label("admin.acme.com")
 
-        def set_priority_hosts(self, hosts, priority):
-            assert priority == 0
-            self.parked.extend(hosts)
-            return len(hosts)
 
-    services = [_svc(f"e{i}.event.sbb.ch", length=5000) for i in range(30)]
-    store = FakeStore()
-    report = cluster.apply(store, services, min_cluster=10, keep=3)
-    assert len(store.parked) == report["parked"] == 27
-    assert all(h.endswith(".event.sbb.ch") for h in store.parked)
+def test_mixed_port_host_parks_only_the_clone_service():
+    # host serves an event clone on 443 and something else on 8443
+    clones = [_svc(i, f"e{i}.event.sbb.ch", title=f"Event {i} - SBB") for i in range(40)]
+    # the odd service: same host as a clone but different app (diff title/length)
+    odd = _svc(500, "e3.event.sbb.ch", port=8443, title="Grafana", server="grafana",
+               length=99000, favicon="fx")
+    rep = cluster.plan(clones + [odd], apex_roots={"sbb.ch"})
+    g = rep["review"][0]
+    assert 500 not in g["parked_candidate_ids"]      # the 8443 app is not parked
+
+
+# ---------------------------------------------------------------- infra proof
+def test_no_infra_means_no_grouping():
+    # no addresses, no cname -> infra unknown -> never grouped
+    svcs = [{"id": i, "host": f"e{i}.event.sbb.ch", "status": 200, "server": "nginx",
+             "tech": "", "content_type": "text/html", "title": f"Event {i} - SBB",
+             "content_length": 5000, "body_hash": f"h{i}", "favicon_hash": "f1",
+             "addresses": None, "cname": ""} for i in range(40)]
+    rep = cluster.plan(svcs, apex_roots={"sbb.ch"})
+    assert rep["auto"] == [] and rep["review"] == []
+
+
+def test_small_group_left_alone():
+    svcs = [_svc(i, f"e{i}.event.sbb.ch", title=f"Event {i} - SBB") for i in range(5)]
+    rep = cluster.plan(svcs, apex_roots={"sbb.ch"}, min_cluster=10)
+    assert rep["auto"] == [] and rep["review"] == []
+
+
+# ---------------------------------------------------------------- helpers
+def test_parent_of_and_machine_label():
+    assert cluster.parent_of("0-11.us.api.binance.com") == "us.api.binance.com"
+    assert cluster.is_machine_label("0-5-3.binance.com")
+    assert cluster.is_machine_label("08ce-7495.event.sbb.ch")
+    assert not cluster.is_machine_label("careers.binance.com")
+
+
+def test_stable_title_words():
+    titles = ["Event A - SBB", "Event B - SBB", "Workshop - SBB", "Meeting - SBB"]
+    assert "sbb" in cluster.stable_title_words(titles)
+    # a group with no common backbone -> empty
+    assert cluster.stable_title_words(["Alpha", "Bravo", "Charlie", "Delta"]) == set()

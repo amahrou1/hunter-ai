@@ -1,139 +1,361 @@
 """Collapse infrastructure clones so the testing phases see distinct apps.
 
 Many programs run a platform that spins up one host per customer/event/tenant,
-all on the SAME backend: e.g. thousands of `<slug>.event.sbb.ch`. Testing all of
-them is testing one app thousands of times - it starves the deep phases where
-bugs are actually found, and makes mapping/crawling take days.
+all on ONE backend: thousands of `<slug>.event.sbb.ch`, or machine-generated
+`0-11.binance.com`. Testing them all is testing one app thousands of times - it
+starves the deep phases where bugs are found and makes mapping take days.
 
-This clusters live services by a BEHAVIOURAL signature (same backend, proven by
-response shape - never by the hostname label alone), keeps a few representatives
-per big cluster, and sets the rest to priority 0 so every downstream phase skips
-them (they all select priority > 0). Nothing is deleted: the hosts stay in the
-inventory, the collapse is recorded, and it is fully reversible with
-`hk priority <pattern> 50`.
+This collapses clones ONLY ON PROOF they are the same app, never on the hostname
+pattern alone. Three proofs, strongest first:
 
-Safety, matching the operator's own rules:
-- Collapse only a cluster that is genuinely large AND shares a parent domain AND
-  has a near-identical response signature. Small or diverse groups are untouched.
-- A host whose behaviour DIFFERS (status, length outlier) is kept at full
-  priority even inside a clone parent, so a vulnerable odd-one-out survives.
-- Always keep representatives; never reduce a cluster to zero.
+  A. wildcard-echo  - random names that cannot exist resolve and return the same
+     response as the members: the parent is a catch-all, members matching it are
+     echoes. Direct proof, works at any depth (covers Binance's apex clones).
+  B. platform-instance - real instances serving different content but clearly one
+     app: same parent, same infrastructure (IPs/CNAME), same server+tech+ctype
+     +favicon, status 200, a title pattern shared across the group, large group.
+     Covers SBB event microsites. Judgment-ish, so it is AGENT-REVIEWED, not
+     auto-parked.
+  C. exact-dup - identical body hash, same parent, same infra, 200, large group.
+     For empty-title APIs where a template match would be too weak.
+
+Split of work: this module (code) builds the evidence-backed candidate groups and
+auto-parks only the strong proofs (A, C). The platform-instance groups (B) are
+staged for the probe AGENT to approve or keep, because deciding "is this noise"
+is judgment. Everything parked is recorded in cluster_parked (reversible), logged
+and never includes a protected host.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from collections import defaultdict
 
-# A cluster must have at least this many members to be collapsed.
-DEFAULT_MIN_CLUSTER = 10
-# How many representatives to keep per collapsed cluster.
-DEFAULT_KEEP = 3
-# Priority a clustered-away host is set to (0 = skipped by every phase).
+DEFAULT_MIN_CLUSTER = 10      # a group must be at least this big to collapse
+DEFAULT_KEEP = 3             # representatives kept per group (plus protected ones)
 PARKED_PRIORITY = 0
+TITLE_STABLE_FRACTION = 0.8  # a word is "stable" if >= this fraction of titles have it
+
+# Leftmost-label tokens that mark a host too important to ever auto-collapse.
+IMPORTANT_LABEL = ("admin", "api", "auth", "sso", "internal", "intranet", "dev",
+                   "staging", "stage", "uat", "preprod", "vpn", "git", "jenkins",
+                   "gateway", "graphql", "console", "portal", "dashboard", "secret")
 
 _HEX = re.compile(r"\b[0-9a-f]{4,}\b")
 _NUM = re.compile(r"\d+")
 _DATE = re.compile(r"\b\d{1,4}[.\-/]\d{1,2}([.\-/]\d{1,4})?\b")
+# A machine-generated leftmost label: hex blobs, numbers, dash-number salad.
+_MACHINE_LABEL = re.compile(r"^(?:[0-9a-f]{4,}|[0-9]+(?:-[0-9]+)*|[0-9a-f]{2,}-[0-9a-f]{2,})$")
 
 
-def _parent(host: str) -> str:
-    """The parent that groups a clone family: the host minus its leftmost label.
-    `alumni-event-2023.event.sbb.ch` -> `event.sbb.ch`."""
+def parent_of(host: str) -> str:
+    """The parent that groups a clone family: host minus its leftmost label.
+    `0-11.us.api.binance.com` -> `us.api.binance.com`."""
     parts = host.split(".")
     return ".".join(parts[1:]) if len(parts) > 2 else host
 
 
-def _title_template(title: str) -> str:
-    """Reduce a title to a template that sibling microsites share. Strips the
-    per-instance bits (dates, numbers, hex ids) AND collapses the variable event
-    name: microsites built from one platform keep a common prefix/suffix (e.g.
-    "<event name> - SBB") and differ only in that name. We keep the stable parts
-    (first word + any brand suffix) and template the middle, so "Event A - SBB"
-    and "Event B - SBB" match while a genuinely different title ("Admin Panel")
-    does not."""
-    t = (title or "").lower().strip()
-    t = _DATE.sub("<d>", t)
-    t = _HEX.sub("<h>", t)
-    t = _NUM.sub("<n>", t)
-    words = t.split()
-    if len(words) <= 1:
-        return t
-    # Keep the first and last word (stable brand/prefix), template the middle.
-    if len(words) == 2:
-        # "Event A" / "Event B" -> keep first word, template the rest.
-        return words[0] + " <x>"
-    return words[0] + " <x> " + words[-1]
+def leftmost(host: str) -> str:
+    return host.split(".", 1)[0]
 
 
-def _length_bucket(length: int | None) -> int:
-    """Bucket content-length so cosmetically-different-but-same-template pages
-    (an event name changes a few bytes) land together. Log-ish buckets."""
-    if not length or length < 0:
-        return -1
-    if length < 1000:
-        return length // 200
-    if length < 20000:
-        return 1000 + length // 2000
-    return 2000 + length // 20000
+def is_machine_label(host: str) -> bool:
+    return bool(_MACHINE_LABEL.match(leftmost(host)))
 
 
-def signature(row) -> tuple:
-    """Behavioural signature of a service: same signature => very likely the
-    same backend. Deliberately ignores the hostname label itself."""
+def is_important_label(host: str) -> bool:
+    """Only the LEFTMOST label is checked, so 0-2-4.dev.api.binance.com is not
+    protected just because it sits under dev.api."""
+    label = leftmost(host)
+    return any(tok in label for tok in IMPORTANT_LABEL)
+
+
+def _norm_title(title: str) -> str:
+    t = (title or "").lower()
+    t = _DATE.sub(" ", t)
+    t = _HEX.sub(" ", t)
+    t = _NUM.sub(" ", t)
+    return t
+
+
+def stable_title_words(titles: list[str]) -> set[str]:
+    """Words present in >= TITLE_STABLE_FRACTION of the group's titles: the
+    common brand/prefix (e.g. {'sbb'} for '<event> - SBB'). Empty if the titles
+    have no shared backbone (then proof B does not apply)."""
+    if not titles:
+        return set()
+    counts: dict[str, int] = defaultdict(int)
+    for t in titles:
+        for w in set(_norm_title(t).split()):
+            if len(w) >= 3:
+                counts[w] += 1
+    threshold = max(2, int(len(titles) * TITLE_STABLE_FRACTION))
+    return {w for w, n in counts.items() if n >= threshold}
+
+
+def _infra_key(row) -> tuple:
+    """Shared-infrastructure key from the host's resolution. Services with the
+    same IP set or the same CNAME target are on the same backend."""
+    cname = (row.get("cname") or "").strip().lower().rstrip(".")
+    if cname:
+        return ("cname", cname)
+    addrs = row.get("addresses")
+    if addrs:
+        try:
+            ips = tuple(sorted(json.loads(addrs))) if isinstance(addrs, str) else tuple(sorted(addrs))
+        except (ValueError, TypeError):
+            ips = ()
+        if ips:
+            return ("ip", ips)
+    return ("none", row["host"])  # unknown infra -> unique, never groups
+
+
+# --------------------------------------------------------------------------
+# Candidate grouping
+# --------------------------------------------------------------------------
+
+def _b_signature(row) -> tuple:
+    """Platform-instance signature: same parent + infra + server/tech/ctype +
+    favicon + status 200. Title is handled separately (stable-words)."""
     return (
-        _parent(row["host"]),
+        parent_of(row["host"]),
+        _infra_key(row),
         row["status"],
-        (row["server"] or "").lower(),
-        (row["tech"] or "").lower(),
-        (row["content_type"] or "").split(";")[0].lower(),
-        _title_template(row["title"] or ""),
-        _length_bucket(row["content_length"]),
+        (row.get("server") or "").lower(),
+        (row.get("tech") or "").lower(),
+        (row.get("content_type") or "").split(";")[0].lower(),
+        row.get("favicon_hash") or "",
     )
 
 
-def plan(services: list, min_cluster: int = DEFAULT_MIN_CLUSTER,
-         keep: int = DEFAULT_KEEP) -> dict:
-    """Decide which services to park. Returns a report:
-    {"clusters": [{signature, parent, size, kept:[host], parked:[host]}],
-     "parked_hosts": [host...], "kept": n, "parked": n}.
-    Pure function - does not touch the DB."""
-    groups: dict[tuple, list] = defaultdict(list)
-    for row in services:
-        groups[signature(row)].append(row)
+def _c_signature(row) -> tuple:
+    """Exact-duplicate signature: same parent + infra + status + exact body."""
+    return (parent_of(row["host"]), _infra_key(row), row["status"], row.get("body_hash") or "")
 
-    clusters = []
-    parked_hosts: list[str] = []
-    for sig, rows in groups.items():
-        if len(rows) < min_cluster:
-            continue  # small/diverse group: leave it fully tested
-        # Keep representatives: prefer ones with distinct behaviour, then fill.
-        rows_sorted = sorted(rows, key=lambda r: (r["content_length"] or 0))
-        reps = []
-        # the smallest, the largest, and the median - spread across the cluster.
-        for idx in dict.fromkeys([0, len(rows_sorted) - 1, len(rows_sorted) // 2]):
-            if len(reps) < keep:
-                reps.append(rows_sorted[idx])
-        kept_hosts = {r["host"] for r in reps}
-        parked = [r["host"] for r in rows if r["host"] not in kept_hosts]
+
+def _is_protected(row, protected: set[str]) -> bool:
+    host = row["host"]
+    if host in protected:
+        return True
+    if is_important_label(host):
+        return True
+    return False
+
+
+def _pick_reps(rows: list, keep: int, protected: set[str]) -> set[str]:
+    """Hosts to KEEP in a group: every protected member (never parked) plus up to
+    `keep` non-protected representatives spread across response sizes (smallest,
+    largest, median) so an outlier by size is retained."""
+    kept = {r["host"] for r in rows if _is_protected(r, protected)}
+    non_protected = sorted((r for r in rows if not _is_protected(r, protected)),
+                           key=lambda r: (r.get("content_length") or 0))
+    if not non_protected:
+        return kept
+    picks: list[int] = []
+    for idx in (0, len(non_protected) - 1, len(non_protected) // 2):
+        if idx not in picks:
+            picks.append(idx)
+    for idx in picks:
+        if len([h for h in kept if h in {r["host"] for r in non_protected}]) >= keep:
+            break
+        kept.add(non_protected[idx]["host"])
+    return kept
+
+
+def _service_rows(services: list) -> list:
+    """services may be sqlite3.Row; make them plain dicts with .get()."""
+    return [dict(r) for r in services]
+
+
+def plan(services: list, *, protected: set[str] | None = None,
+         wildcard_parents: set[str] | None = None,
+         echo_hosts: set[str] | None = None,
+         min_cluster: int = DEFAULT_MIN_CLUSTER, keep: int = DEFAULT_KEEP,
+         apex_roots: set[str] | None = None) -> dict:
+    """Build candidate clone groups with proof. Pure (no DB writes).
+
+    protected: hosts never parked (policy assets, focus, leads, takeover).
+    wildcard_parents / echo_hosts: results of the agent/code wildcard-echo probe
+      (Proof A). echo_hosts are confirmed catch-all echoes -> auto-park.
+    apex_roots: the program's scope roots; directly under these, Proof B also
+      requires a machine-generated label.
+
+    Returns {"auto": [...groups to park now...],
+             "review": [...platform-instance groups for the agent...],
+             "auto_parked_services": [service_id...]}.
+    """
+    protected = {h.lower() for h in (protected or set())}
+    echo_hosts = {h.lower() for h in (echo_hosts or set())}
+    apex_roots = {r.lower() for r in (apex_roots or set())}
+    rows = _service_rows(services)
+
+    auto_groups: list[dict] = []
+    review_groups: list[dict] = []
+    auto_ids: list[int] = []
+    claimed: set[int] = set()  # service ids already placed in a group
+
+    # ---- Proof A: wildcard echo (auto-park, strongest) -------------------
+    if echo_hosts:
+        by_parent: dict[str, list] = defaultdict(list)
+        for r in rows:
+            if r["host"] in echo_hosts and not _is_protected(r, protected):
+                by_parent[parent_of(r["host"])].append(r)
+        for parent, grp in by_parent.items():
+            ids = [r["id"] for r in grp]
+            claimed.update(ids)
+            auto_ids.extend(ids)
+            auto_groups.append({"proof": "wildcard-echo", "parent": parent,
+                                "size": len(grp), "parked_count": len(grp),
+                                "sample_parked": [r["host"] for r in grp[:5]]})
+
+    # ---- Proof C: exact duplicates (auto-park) ---------------------------
+    c_groups: dict[tuple, list] = defaultdict(list)
+    for r in rows:
+        if r["id"] in claimed or _is_protected(r, protected):
+            continue
+        if r["status"] != 200 or not r.get("body_hash"):
+            continue
+        if _infra_key(r)[0] == "none":
+            continue  # no infra proof -> do not group
+        c_groups[_c_signature(r)].append(r)
+    for sig, grp in c_groups.items():
+        if len(grp) < min_cluster:
+            continue
+        reps = _pick_reps(grp, keep, protected)
+        parked = [r for r in grp if r["host"] not in reps]
         if not parked:
             continue
-        parked_hosts.extend(parked)
-        clusters.append({
-            "parent": sig[0], "status": sig[1], "size": len(rows),
-            "kept": sorted(kept_hosts), "parked_count": len(parked),
-            "sample_parked": parked[:5],
+        ids = [r["id"] for r in parked]
+        claimed.update(r["id"] for r in grp)
+        auto_ids.extend(ids)
+        auto_groups.append({"proof": "exact-dup", "parent": sig[0], "size": len(grp),
+                            "kept": sorted(reps), "parked_count": len(parked),
+                            "sample_parked": [r["host"] for r in parked[:5]]})
+
+    # ---- Proof B: platform instances (AGENT-REVIEWED) -------------------
+    b_groups: dict[tuple, list] = defaultdict(list)
+    for r in rows:
+        if r["id"] in claimed or _is_protected(r, protected):
+            continue
+        if r["status"] != 200:
+            continue
+        if _infra_key(r)[0] == "none":
+            continue
+        b_groups[_b_signature(r)].append(r)
+    for sig, grp in b_groups.items():
+        if len(grp) < min_cluster:
+            continue
+        parent = sig[0]
+        # Apex rule: directly under a scope root, require machine-generated labels
+        # so real apps (shop, careers) are never grouped by template.
+        if parent in apex_roots and not all(is_machine_label(r["host"]) for r in grp):
+            # keep only the machine-labelled members as a group; the rest stay.
+            machine = [r for r in grp if is_machine_label(r["host"])]
+            if len(machine) < min_cluster:
+                continue
+            grp = machine
+        titles = [r.get("title") or "" for r in grp]
+        machine_group = all(is_machine_label(r["host"]) for r in grp)
+        stable = stable_title_words(titles)
+        # Need either a shared title backbone OR an all-machine-label group
+        # (machine labels + same infra + same fingerprint is itself strong).
+        if not stable and not machine_group:
+            continue
+        reps = _pick_reps(grp, keep, protected)
+        parked = [r for r in grp if r["host"] not in reps]
+        if not parked:
+            continue
+        claimed.update(r["id"] for r in grp)
+        review_groups.append({
+            "proof": "platform-instance", "parent": parent, "size": len(grp),
+            "infra": sig[1][0], "server": sig[3], "status": sig[2],
+            "stable_title_words": sorted(stable),
+            "kept": sorted(reps),
+            "parked_candidate_ids": [r["id"] for r in parked],
+            "parked_count": len(parked),
+            "sample_parked": [r["host"] for r in parked[:8]],
+            "sample_titles": list(dict.fromkeys(titles))[:5],
         })
-    clusters.sort(key=lambda c: -c["size"])
-    return {"clusters": clusters, "parked_hosts": parked_hosts,
-            "parked": len(parked_hosts)}
+
+    auto_groups.sort(key=lambda c: -c["size"])
+    review_groups.sort(key=lambda c: -c["size"])
+    return {"auto": auto_groups, "review": review_groups, "auto_parked_services": auto_ids}
 
 
-def apply(store, services: list, min_cluster: int = DEFAULT_MIN_CLUSTER,
-          keep: int = DEFAULT_KEEP) -> dict:
-    """Run plan() and set parked hosts to PARKED_PRIORITY in the DB. Returns the
-    report (with the hosts actually parked)."""
-    report = plan(services, min_cluster=min_cluster, keep=keep)
-    if report["parked_hosts"]:
-        store.set_priority_hosts(report["parked_hosts"], PARKED_PRIORITY)
-    return report
+def random_probe_names(parent: str, n: int = 3) -> list[str]:
+    """Names that cannot legitimately exist under `parent`, for the catch-all
+    (wildcard-echo) probe."""
+    import secrets
+    return [f"{secrets.token_hex(5)}-hunter-nx.{parent}" for _ in range(n)]
+
+
+def _park_items(services: list, group: dict) -> list[dict]:
+    """Build park_services() items for the hosts a group parks."""
+    kept = set(group.get("kept", []))
+    by_host = {}
+    for r in services:
+        d = dict(r)
+        by_host.setdefault(d["host"], d)
+    items = []
+    for r in services:
+        d = dict(r)
+        if "parked_candidate_ids" in group:
+            if d["id"] not in group["parked_candidate_ids"]:
+                continue
+        else:  # auto groups: park members of this parent not kept
+            if parent_of(d["host"]) != group["parent"] or d["host"] in kept:
+                continue
+            # only members flagged into this group (sample covers echo/exact sets)
+        items.append({"service_id": d["id"], "host": d["host"], "parent": group["parent"],
+                      "proof": group["proof"],
+                      "reason": f"{group['proof']} clone of {group['parent']} "
+                                f"({group['size']} same-backend hosts)"})
+    return items
+
+
+def apply_auto(store, services: list, report: dict) -> int:
+    """Park the auto groups (wildcard-echo, exact-dup) with full records. For
+    auto groups we park exactly the service ids collected in the plan."""
+    rows = {dict(r)["id"]: dict(r) for r in services}
+    parked = 0
+    # wildcard-echo: auto_parked_services carries the exact ids.
+    echo_ids = set(report.get("auto_parked_services", []))
+    items = []
+    for g in report["auto"]:
+        if g["proof"] == "exact-dup":
+            kept = set(g.get("kept", []))
+            for r in services:
+                d = dict(r)
+                if parent_of(d["host"]) == g["parent"] and d["host"] not in kept \
+                        and d["status"] == 200:
+                    items.append({"service_id": d["id"], "host": d["host"], "parent": g["parent"],
+                                  "proof": "exact-dup",
+                                  "reason": f"exact-dup clone of {g['parent']} ({g['size']} hosts)"})
+    for sid in echo_ids:
+        if sid in rows:
+            d = rows[sid]
+            items.append({"service_id": sid, "host": d["host"], "parent": parent_of(d["host"]),
+                          "proof": "wildcard-echo",
+                          "reason": f"wildcard-echo under {parent_of(d['host'])}"})
+    # de-dup by service_id
+    seen, uniq = set(), []
+    for it in items:
+        if it["service_id"] not in seen:
+            seen.add(it["service_id"])
+            uniq.append(it)
+    return store.park_services(uniq)
+
+
+def apply_review_group(store, group: dict) -> int:
+    """Park one platform-instance group the agent approved."""
+    items = [{"service_id": sid, "host": "", "parent": group["parent"],
+              "proof": "platform-instance",
+              "reason": f"platform-instance of {group['parent']} ({group['size']} hosts), "
+                        f"agent-approved"}
+             for sid in group["parked_candidate_ids"]]
+    # fill host for the record
+    for it in items:
+        row = store.db.execute("SELECT host FROM services WHERE id=?", (it["service_id"],)).fetchone()
+        it["host"] = row["host"] if row else ""
+    return store.park_services(items)

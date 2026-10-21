@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS services (
     content_type TEXT,
     content_length INTEGER,
     body_hash TEXT,
+    favicon_hash TEXT,
     baseline TEXT,
     priority INTEGER NOT NULL DEFAULT 50,
     first_seen TEXT NOT NULL,
@@ -99,6 +100,19 @@ CREATE TABLE IF NOT EXISTS leads (
     source TEXT NOT NULL,
     first_seen TEXT NOT NULL,
     UNIQUE (kind, url)
+);
+CREATE TABLE IF NOT EXISTS cluster_parked (
+    service_id INTEGER PRIMARY KEY,   -- the service parked as an infra clone
+    host TEXT NOT NULL,
+    parent TEXT NOT NULL,             -- the clone family parent (e.g. event.sbb.ch)
+    proof TEXT NOT NULL,              -- wildcard-echo | exact-dup | platform-instance
+    prev_priority INTEGER NOT NULL,   -- so it can be restored exactly
+    reason TEXT,
+    parked_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cluster_restored (
+    parent TEXT PRIMARY KEY,          -- a family the operator restored: never re-park it
+    restored_at TEXT NOT NULL
 );
 """
 
@@ -182,6 +196,8 @@ class Assets:
         for column in ("crawled", "discovered"):
             if column not in service_cols:
                 self.db.execute(f"ALTER TABLE services ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
+        if "favicon_hash" not in service_cols:
+            self.db.execute("ALTER TABLE services ADD COLUMN favicon_hash TEXT")
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(hosts)")}
         if "probed" not in columns:
             self.db.execute("ALTER TABLE hosts ADD COLUMN probed INTEGER NOT NULL DEFAULT 0")
@@ -281,6 +297,72 @@ class Assets:
                 f"UPDATE services SET priority=? WHERE host IN ({marks})", (priority, *chunk))
             total += cur.rowcount
         return total
+
+    # cluster parking (reversible) -----------------------------------------
+    def restored_parents(self) -> set[str]:
+        """Clone families the operator restored by hand: never auto-park again."""
+        return {r["parent"] for r in self.db.execute("SELECT parent FROM cluster_restored")}
+
+    def park_services(self, items: list[dict]) -> int:
+        """Park services as infra clones, recording each so it is reversible and
+        idempotent. items: [{service_id, host, parent, proof, reason}].
+        A family the operator restored is skipped. Returns count newly parked."""
+        restored = self.restored_parents()
+        parked = 0
+        for it in items:
+            if it["parent"] in restored:
+                continue
+            row = self.db.execute("SELECT priority FROM services WHERE id=?",
+                                  (it["service_id"],)).fetchone()
+            if row is None:
+                continue
+            prev = row["priority"]
+            if prev == 0 and self.db.execute(
+                    "SELECT 1 FROM cluster_parked WHERE service_id=?", (it["service_id"],)).fetchone():
+                continue  # already parked by clustering
+            # prev_priority: keep the first non-zero we saw, so restore is faithful.
+            existing = self.db.execute(
+                "SELECT prev_priority FROM cluster_parked WHERE service_id=?", (it["service_id"],)).fetchone()
+            prev_priority = existing["prev_priority"] if existing else (prev or 50)
+            self.db.execute("UPDATE services SET priority=0 WHERE id=?", (it["service_id"],))
+            self.db.execute(
+                "INSERT OR REPLACE INTO cluster_parked"
+                "(service_id, host, parent, proof, prev_priority, reason, parked_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (it["service_id"], it["host"], it["parent"], it["proof"],
+                 prev_priority, it.get("reason", ""), now()))
+            parked += 1
+        return parked
+
+    def unpark_family(self, parent: str, remember: bool = True) -> int:
+        """Restore every service parked under a clone family to its previous
+        priority. With remember=True, record the family so a later clustering run
+        does not park it again. Returns count restored."""
+        rows = list(self.db.execute(
+            "SELECT service_id, prev_priority FROM cluster_parked WHERE parent=?", (parent,)))
+        for r in rows:
+            self.db.execute("UPDATE services SET priority=? WHERE id=?",
+                            (r["prev_priority"], r["service_id"]))
+        self.db.execute("DELETE FROM cluster_parked WHERE parent=?", (parent,))
+        if remember:
+            self.db.execute("INSERT OR REPLACE INTO cluster_restored(parent, restored_at) VALUES(?,?)",
+                            (parent, now()))
+        return len(rows)
+
+    def reconcile_parked(self) -> int:
+        """After a re-probe may have reset priorities, re-apply priority 0 to
+        every service still recorded as parked (and drop records whose service
+        is gone). Keeps re-runs idempotent. Returns count re-applied."""
+        ids = [r["service_id"] for r in self.db.execute("SELECT service_id FROM cluster_parked")]
+        n = 0
+        for sid in ids:
+            cur = self.db.execute("UPDATE services SET priority=0 WHERE id=? AND priority<>0", (sid,))
+            n += cur.rowcount
+        return n
+
+    def parked_summary(self) -> list[sqlite3.Row]:
+        return list(self.db.execute(
+            "SELECT parent, proof, COUNT(*) AS n FROM cluster_parked GROUP BY parent, proof ORDER BY n DESC"))
 
     def takeover_candidates(self) -> list[sqlite3.Row]:
         return list(self.db.execute("SELECT * FROM hosts WHERE takeover_candidate=1 ORDER BY host"))

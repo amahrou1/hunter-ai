@@ -123,6 +123,7 @@ def httpx(store: A.Assets, scope: sc.Scope, path: Path, focus=lambda _h: False) 
             content_length=record.get("content_length") or record.get("content-length"),
             body_hash=record.get("hash", {}).get("body_sha256") if isinstance(record.get("hash"), dict)
             else record.get("hash"),
+            favicon_hash=str(record.get("favicon") or record.get("favicon_hash") or "") or None,
             priority=priority(host, status, tech, focus))
         probed.add(host)
         services += 1

@@ -98,6 +98,10 @@ class Kit:
         from .instructions import Operator
         return Operator(self.target, self.state).is_focus
 
+    def focus_hosts(self) -> list[str]:
+        from .instructions import Operator
+        return Operator(self.target, self.state).focus()
+
 
 def _print(data, as_json: bool, text: str | None = None) -> None:
     if as_json:
@@ -153,10 +157,20 @@ def cmd_hosts(kit: Kit, args) -> int:
 
 
 def cmd_services(kit: Kit, args) -> int:
-    rows = kit.store.work_services(kit.scope(), args.todo) if args.todo else kit.store.services()
+    if args.todo:
+        rows = kit.store.work_services(kit.scope(), args.todo)
+    else:
+        # Hide parked infra clones (priority 0) by default; --all shows them.
+        rows = kit.store.services(min_priority=0 if args.all else 1)
+    hidden = 0
+    if not args.todo and not args.all:
+        hidden = len([r for r in kit.store.services() if r["priority"] == 0])
     rows = _rows(rows, args.limit)
     text = "\n".join(f"{r['id']:>5} {r['priority']:>3} {r['url']} [{r['status']}] {(r['title'] or '')[:60]}"
                      for r in rows)
+    if hidden and not args.json:
+        text += f"\n({hidden} parked clone service(s) hidden; `hk services --all` to show, "
+        text += "`hk cluster --restore <parent>` to un-park)"
     _print(rows, args.json, text)
     return 0
 
@@ -600,34 +614,157 @@ def cmd_depconf(kit: Kit, args) -> int:
     return 0
 
 
-def cmd_cluster(kit: Kit, args) -> int:
-    from . import cluster
-    cfg = {}
+def _cluster_cfg():
     try:
         from . import config
-        cfg = config.load_settings().get("cluster", {}) or {}
+        return config.load_settings().get("cluster", {}) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _cluster_plan(kit: Kit, cfg: dict):
+    from . import cluster, scope as sc
+    services = [dict(r) for r in kit.store.services()]
+    # join each service with its host's IPs/CNAME for infra proof
+    host_res = {r["host"]: r for r in kit.store.hosts(scope=A.IN)}
+    for s in services:
+        hr = host_res.get(s["host"])
+        if hr:
+            s["addresses"] = hr["addresses"]
+            s["cname"] = hr["cname"]
+    scope = kit.scope()
+    protected = cluster_protected_hosts(kit, scope)
+    apex_roots = set(scope.wildcard_roots()) | {a.host for a in scope.in_scope if a.host}
+    echo_hosts = set(_cluster_echo_hosts(kit))
+    report = cluster.plan(
+        services, protected=protected, echo_hosts=echo_hosts, apex_roots=apex_roots,
+        min_cluster=int(cfg.get("min_cluster", cluster.DEFAULT_MIN_CLUSTER)),
+        keep=int(cfg.get("keep", cluster.DEFAULT_KEEP)))
+    return services, report
+
+
+def cluster_protected_hosts(kit: Kit, scope) -> set[str]:
+    """Hosts that must never be parked: explicit policy assets, operator-focused
+    hosts, and hosts that already carry a lead/finding/takeover flag."""
+    protected: set[str] = set()
+    for a in scope.in_scope:
+        if a.host and not getattr(a, "wildcard_host", False) and a.kind in ("domain", "url"):
+            protected.add(a.host.lower())
+    try:
+        protected.update(h.lower() for h in kit.focus_hosts())
     except Exception:  # noqa: BLE001
         pass
-    services = kit.store.services()
-    min_cluster = int(cfg.get("min_cluster", cluster.DEFAULT_MIN_CLUSTER))
-    keep = int(cfg.get("keep", cluster.DEFAULT_KEEP))
+    for lead in kit.store.leads():
+        if lead["host"]:
+            protected.add(lead["host"].lower())
+    for f in kit.store.findings():
+        if f["host"]:
+            protected.add(f["host"].lower())
+    for h in kit.store.takeover_candidates():
+        protected.add(h["host"].lower())
+    return protected
+
+
+def _cluster_echo_hosts(kit: Kit) -> list[str]:
+    row = kit.store.db.execute("SELECT value FROM meta WHERE key='cluster_echo_hosts'").fetchone()
+    if not row:
+        return []
+    try:
+        return json.loads(row["value"])
+    except (ValueError, TypeError):
+        return []
+
+
+def cmd_cluster(kit: Kit, args) -> int:
+    from . import cluster
+    cfg = _cluster_cfg()
+
+    if args.restore:
+        n = kit.store.unpark_family(args.restore, remember=True)
+        print(f"restored {n} service(s) under {args.restore}; it will not be auto-parked again")
+        return 0
+    if args.probe_wildcards:
+        return _cmd_cluster_probe_wildcards(kit, cfg)
+
+    services, report = _cluster_plan(kit, cfg)
+
+    if args.approve:
+        grp = next((g for g in report["review"] if g["parent"] == args.approve), None)
+        if not grp:
+            print(f"no platform-instance group under {args.approve} to approve")
+            return 1
+        n = cluster.apply_review_group(kit.store, grp)
+        print(f"approved: parked {n} clone(s) under {args.approve}, kept {len(grp['kept'])} representative(s)")
+        return 0
+
     if args.apply:
-        report = cluster.apply(kit.store, services, min_cluster=min_cluster, keep=keep)
-    else:
-        report = cluster.plan(services, min_cluster=min_cluster, keep=keep)
-    if args.json:
+        n = cluster.apply_auto(kit.store, services, report)
+        kit.store.reconcile_parked()
+        if args.json:
+            print(json.dumps({"auto_parked": n, "review": report["review"]}, indent=1))
+            return 0
+        print(f"auto-parked {n} clone service(s) (wildcard-echo + exact-dup).")
+        if report["review"]:
+            print(f"\n{len(report['review'])} platform-instance group(s) need your judgment "
+                  f"(same backend, but real per-instance content):")
+            for g in report["review"]:
+                print(f"  {g['parent']}: {g['size']} hosts, infra={g['infra']}, "
+                      f"titles~{g['sample_titles'][:2]} -> would park {g['parked_count']}, keep {len(g['kept'])}")
+            print("Approve a group with: hk cluster --approve <parent>  (keeps 3 reps, parks the rest)")
+        return 0
+
+    # default / --review : show the plan, park nothing
+    if args.json or args.review:
         print(json.dumps(report, indent=1))
         return 0
-    if not report["clusters"]:
-        print(f"no infrastructure clone groups (>= {min_cluster} same-backend hosts)")
+    if not report["auto"] and not report["review"]:
+        print("no infrastructure clone groups found")
         return 0
-    verb = "parked" if args.apply else "would park"
-    for c in report["clusters"]:
-        print(f"{c['parent']}: {c['size']} hosts same backend (status {c['status']}) - "
-              f"keep {len(c['kept'])}, {verb} {c['parked_count']}")
-    print(f"\nTotal {verb}: {report['parked']} host(s). "
-          + ("Restore a group with: hk priority '*.<parent>' 50"
-             if args.apply else "Run with --apply to collapse them."))
+    for g in report["auto"]:
+        print(f"[AUTO {g['proof']}] {g['parent']}: {g['size']} hosts -> park {g['parked_count']}")
+    for g in report["review"]:
+        print(f"[REVIEW platform-instance] {g['parent']}: {g['size']} hosts, infra={g['infra']}, "
+              f"titles~{g['sample_titles'][:2]} -> would park {g['parked_count']}, keep {len(g['kept'])}")
+    print("\nRun `hk cluster --apply` to auto-park the strong proofs and list the review groups.")
+    return 0
+
+
+def _cmd_cluster_probe_wildcards(kit: Kit, cfg: dict) -> int:
+    """For each large parent, probe random non-existent names; if they resolve
+    and return the same response as members, the parent is a catch-all and its
+    matching members are wildcard echoes -> record them for auto-parking."""
+    from . import cluster, webprobe
+    from collections import defaultdict
+    services = [dict(r) for r in kit.store.services()]
+    by_parent = defaultdict(list)
+    for s in services:
+        by_parent[cluster.parent_of(s["host"])].append(s)
+    min_cluster = int(cfg.get("min_cluster", cluster.DEFAULT_MIN_CLUSTER))
+    opener = webprobe.opener_through(os.environ.get("HUNTER_PROXY", ""), os.environ.get("SSL_CERT_FILE"))
+    echo_hosts: list[str] = []
+    checked = 0
+    for parent, members in by_parent.items():
+        if len(members) < min_cluster:
+            continue
+        checked += 1
+        # fetch the catch-all signature from random names
+        sigs = []
+        for name in cluster.random_probe_names(parent, 3):
+            res = webprobe.fetch(opener, f"https://{name}/")
+            if res.get("blocked") or "error" in res:
+                continue
+            sigs.append((res.get("status"), res.get("hash")))
+        if not sigs or len({s for s in sigs}) != 1:
+            continue  # names did not resolve consistently -> not a catch-all
+        catch_all = sigs[0]
+        # a member is an echo if its own response matches the catch-all
+        for m in members:
+            if (m.get("status"), m.get("body_hash")) == catch_all:
+                echo_hosts.append(m["host"])
+    kit.store.db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('cluster_echo_hosts', ?)",
+                         (json.dumps(echo_hosts),))
+    print(f"wildcard probe: checked {checked} parent(s), found {len(echo_hosts)} echo host(s). "
+          f"Run `hk cluster --apply` to park them.")
     return 0
 
 
@@ -705,6 +842,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--unprobed", action="store_true"); a.add_argument("--limit", type=int, default=0)
     a.add_argument("--json", action="store_true"); a.set_defaults(func=cmd_hosts)
     a = sub.add_parser("services"); a.add_argument("--todo", choices=["crawled", "discovered"])
+    a.add_argument("--all", action="store_true", help="include parked infra clones")
     a.add_argument("--limit", type=int, default=0); a.add_argument("--json", action="store_true")
     a.set_defaults(func=cmd_services)
     a = sub.add_parser("endpoints"); a.add_argument("--host"); a.add_argument("--source")
@@ -745,7 +883,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("depconf").set_defaults(func=cmd_depconf)
     a = sub.add_parser("techhints"); a.add_argument("--json", action="store_true")
     a.set_defaults(func=cmd_techhints)
-    a = sub.add_parser("cluster"); a.add_argument("--apply", action="store_true")
+    a = sub.add_parser("cluster")
+    a.add_argument("--apply", action="store_true", help="auto-park strong proofs; list review groups")
+    a.add_argument("--review", action="store_true", help="JSON of platform-instance groups for judgment")
+    a.add_argument("--approve", metavar="PARENT", help="park an agent-approved platform-instance group")
+    a.add_argument("--restore", metavar="PARENT", help="un-park a family and never auto-park it again")
+    a.add_argument("--probe-wildcards", action="store_true", help="detect catch-all parents (Proof A)")
     a.add_argument("--json", action="store_true"); a.set_defaults(func=cmd_cluster)
     sub.add_parser("jsintel").set_defaults(func=cmd_jsintel)
     sub.add_parser("authflows").set_defaults(func=cmd_authflows)

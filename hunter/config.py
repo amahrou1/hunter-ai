@@ -130,11 +130,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         # Soft memory cap per external tool (MB). The VPS has 8 GB.
         "mem_mb": 1500,
     },
-    # Collapse infrastructure clones after probe: thousands of per-event/tenant
-    # microsites on one backend (e.g. *.event.sbb.ch) are parked to a few
-    # representatives so the testing phases see distinct apps, not the same app
-    # thousands of times. Behavioural (same response signature), reversible
-    # (hk priority '*.<parent>' 50), and logged. See cluster.py.
+    # Collapse infrastructure clones after probe so the testing phases see
+    # distinct apps, not the same backend thousands of times (e.g. *.event.sbb.ch
+    # microsites, or machine-generated 0-11.binance.com). Collapses only ON PROOF
+    # of same app - wildcard-echo and exact-dup are auto-parked by code; the
+    # judgment-ish platform-instance groups are left for the probe agent to
+    # approve. Reversible (hk cluster --restore <parent>), logged, and never
+    # touches a protected host (policy-listed, focused, admin/api-named, or
+    # carrying a lead). See cluster.py.
     "cluster": {
         "enabled": True,
         "min_cluster": 10,   # a clone group must be at least this big to collapse
