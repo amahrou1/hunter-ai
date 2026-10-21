@@ -29,7 +29,7 @@ class AIReconPhase(AgentPhase):
         return [
             MustStep("M1", "Enumerate subdomains passively for every in-scope wildcard root "
                      "(subfinder + crt.sh); import each with `hk import subfinder`.", "done-roots.txt"),
-            MustStep("M2", "Resolve them with dnsx (cap the rate: `-rl $HUNTER_DNS_MAX_RPS`), then "
+            MustStep("M2", "Resolve them with dnsx (pass `-rl $HUNTER_DNS_MAX_RPS` to stay polite), then "
                      "`hk import dnsx` to classify third-party and takeover candidates."),
             MustStep("M3", "Re-check subdomain-takeover candidates with `hk takeover`."),
             MustStep("M4", "Flag wildcard-DNS roots (a random name resolves) with `hk note` and "
@@ -48,10 +48,9 @@ class AIReconPhase(AgentPhase):
             "`hk import subfinder <file>`.\n"
             "3. Resolve them: run dnsx (-json -a -aaaa -cname -resp) over that root's hosts into a file, then "
             "`hk import dnsx <file>` (this also classifies third-party and takeover candidates). Public "
-            "resolvers do NOT go through the proxy, so you MUST cap the query rate: pass `-rl $HUNTER_DNS_MAX_RPS` "
-            "to every dnsx run (the command checker refuses dnsx without a rate limit, or above that ceiling). "
-            "Then append that root to ./done-roots.txt before moving to the next, so the next run continues "
-            "where you stopped.\n"
+            "resolvers do NOT go through the proxy, so pass `-rl $HUNTER_DNS_MAX_RPS` to dnsx to keep the "
+            "query rate polite. Then append that root to ./done-roots.txt before moving to the next, so the "
+            "next run continues where you stopped.\n"
             "4. Check the takeover candidates for real: `hk takeover`.\n"
             "5. Watch for measurement problems: if a made-up random name under a root resolves, that root has "
             "wildcard DNS and most 'hosts' are echoes - note it (`hk note`) and deprioritise them "

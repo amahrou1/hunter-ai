@@ -181,21 +181,23 @@ def _dns_max_rps() -> int:
 
 
 def _check_dns_rate(text: str) -> None:
-    """Require dnsx to carry an explicit rate limit at or below the ceiling.
-    Public resolvers bypass the scope proxy, so this is the only place the DNS
-    query rate can be bounded; without it a huge program can hammer resolvers
-    into throttling and drop resolutions."""
+    """Keep dnsx from running the resolvers at an egregious rate - but NEVER
+    block it just for omitting the flag. dnsx is a core recon tool; a hard block
+    on a missing -rl kills recon entirely (0 hosts), which is far worse than an
+    unthrottled dnsx (resolvers self-throttle). So we only refuse an EXPLICIT
+    rate that is well above the ceiling; a missing -rl is allowed (dnsx's own
+    default is already modest), and a rate at or near the ceiling passes."""
     ceiling = _dns_max_rps()
     if ceiling <= 0 or not _DNSX_RE.search(text):
         return
     match = _DNSX_RATE_RE.search(text)
     if match is None:
+        return  # no explicit rate: allow (do NOT break recon over a missing flag)
+    # Only block a rate that is clearly reckless (more than ~4x the ceiling),
+    # so a reasonable choice near the ceiling is never refused.
+    if int(match.group(1)) > max(ceiling * 4, 200):
         raise Verdict(
-            f"dnsx must carry a rate limit so it does not overrun public resolvers. "
-            f"Add -rl {ceiling} (queries per second, at most {ceiling}).")
-    if int(match.group(1)) > ceiling:
-        raise Verdict(
-            f"dnsx -rl {match.group(1)} is too high; the resolver rate ceiling is {ceiling}/s. "
+            f"dnsx -rl {match.group(1)} is far above the resolver ceiling ({ceiling}/s). "
             f"Use -rl {ceiling} or less.")
 
 

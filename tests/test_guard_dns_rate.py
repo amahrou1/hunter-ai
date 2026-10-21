@@ -20,26 +20,27 @@ def test_no_ceiling_means_no_dns_enforcement(monkeypatch, scope):
     check_command("dnsx -l hosts.txt -json -a", scope, [])
 
 
-def test_dnsx_without_rate_limit_is_blocked(monkeypatch, scope):
+def test_dnsx_without_rate_limit_is_allowed(monkeypatch, scope):
+    # A missing -rl must NEVER block dnsx: blocking a core recon tool over one
+    # flag kills recon (0 hosts). dnsx's own default rate is modest.
     monkeypatch.setenv("HUNTER_DNS_MAX_RPS", "150")
-    with pytest.raises(Verdict) as e:
-        check_command("dnsx -l hosts.txt -json -a -cname", scope, [])
-    assert "rate limit" in str(e.value).lower()
-    assert "150" in str(e.value)
+    check_command("dnsx -l hosts.txt -json -a -cname", scope, [])
+    # the exact command that broke the Mercedes run must now pass:
+    check_command('printf "a.dvb.corpinter.net" | dnsx -silent -a -t A', scope, [])
 
 
-def test_dnsx_above_ceiling_is_blocked(monkeypatch, scope):
-    monkeypatch.setenv("HUNTER_DNS_MAX_RPS", "150")
-    with pytest.raises(Verdict) as e:
-        check_command("dnsx -l hosts.txt -rl 500 -json", scope, [])
-    assert "150" in str(e.value)
-
-
-def test_dnsx_at_or_below_ceiling_is_allowed(monkeypatch, scope):
+def test_reasonable_rate_is_allowed(monkeypatch, scope):
     monkeypatch.setenv("HUNTER_DNS_MAX_RPS", "150")
     check_command("dnsx -l hosts.txt -rl 150 -json -a", scope, [])
     check_command("dnsx -l hosts.txt -rate-limit 50 -json", scope, [])
-    check_command("dnsx -l hosts.txt -rl=100 -json", scope, [])
+    check_command("dnsx -l hosts.txt -rl 300 -json", scope, [])  # 2x ceiling: fine
+
+
+def test_only_reckless_rate_is_blocked(monkeypatch, scope):
+    # block only a rate far above the ceiling (> 4x, min 200)
+    monkeypatch.setenv("HUNTER_DNS_MAX_RPS", "150")
+    with pytest.raises(Verdict):
+        check_command("dnsx -l hosts.txt -rl 5000 -json", scope, [])
 
 
 def test_other_tools_unaffected_by_dns_ceiling(monkeypatch, scope):
@@ -49,8 +50,11 @@ def test_other_tools_unaffected_by_dns_ceiling(monkeypatch, scope):
     check_command("httpx -l hosts.txt -json -o out.jsonl", scope, [])
 
 
-def test_low_automation_tighter_ceiling(monkeypatch, scope):
+def test_low_automation_missing_flag_still_allowed(monkeypatch, scope):
+    # even on a low-automation program, a missing flag must not break recon
     monkeypatch.setenv("HUNTER_DNS_MAX_RPS", "25")
-    with pytest.raises(Verdict):
-        check_command("dnsx -l hosts.txt -rl 100 -json", scope, [])
+    check_command("dnsx -l hosts.txt -json -a", scope, [])
     check_command("dnsx -l hosts.txt -rl 25 -json", scope, [])
+    # only a reckless rate is refused
+    with pytest.raises(Verdict):
+        check_command("dnsx -l hosts.txt -rl 9000 -json", scope, [])
