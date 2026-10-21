@@ -49,6 +49,15 @@ _DATE = re.compile(r"\b\d{1,4}[.\-/]\d{1,2}([.\-/]\d{1,4})?\b")
 _MACHINE_LABEL = re.compile(r"^(?:[0-9a-f]{4,}|[0-9]+(?:-[0-9]+)*|[0-9a-f]{2,}-[0-9a-f]{2,})$")
 
 
+def _is_redirect(status) -> bool:
+    """3xx redirects genuinely vary (different Location per host) and must never
+    be grouped. Every other status may group WITH infra proof."""
+    try:
+        return 300 <= int(status) < 400
+    except (TypeError, ValueError):
+        return True  # unknown status -> treat as non-groupable, be safe
+
+
 def parent_of(host: str) -> str:
     """The parent that groups a clone family: host minus its leftmost label.
     `0-11.us.api.binance.com` -> `us.api.binance.com`."""
@@ -214,8 +223,8 @@ def plan(services: list, *, protected: set[str] | None = None,
     for r in rows:
         if r["id"] in claimed or _is_protected(r, protected):
             continue
-        if r["status"] != 200 or not r.get("body_hash"):
-            continue
+        if _is_redirect(r["status"]) or not r.get("body_hash"):
+            continue  # 3xx redirects genuinely vary; need a real body to match
         if _infra_key(r)[0] == "none":
             continue  # no infra proof -> do not group
         c_groups[_c_signature(r)].append(r)
@@ -231,14 +240,21 @@ def plan(services: list, *, protected: set[str] | None = None,
         auto_ids.extend(ids)
         auto_groups.append({"proof": "exact-dup", "parent": sig[0], "size": len(grp),
                             "kept": sorted(reps), "parked_count": len(parked),
+                            "parked_candidate_ids": ids,
                             "sample_parked": [r["host"] for r in parked[:5]]})
 
     # ---- Proof B: platform instances (AGENT-REVIEWED) -------------------
+    # Any non-redirect status may group here, BUT only with real infra proof
+    # (shared IPs/CNAME). That is what keeps distinct apps behind a shared WAF/
+    # login page from merging: they would need the SAME backend IPs to group. A
+    # gated microsite platform (thousands of same-parent 403s on the same IPs,
+    # same length) is exactly one backend, so excluding non-200 broke the real
+    # SBB case and is not needed - the infra key is the guard.
     b_groups: dict[tuple, list] = defaultdict(list)
     for r in rows:
         if r["id"] in claimed or _is_protected(r, protected):
             continue
-        if r["status"] != 200:
+        if _is_redirect(r["status"]):
             continue
         if _infra_key(r)[0] == "none":
             continue
@@ -258,9 +274,16 @@ def plan(services: list, *, protected: set[str] | None = None,
         titles = [r.get("title") or "" for r in grp]
         machine_group = all(is_machine_label(r["host"]) for r in grp)
         stable = stable_title_words(titles)
-        # Need either a shared title backbone OR an all-machine-label group
-        # (machine labels + same infra + same fingerprint is itself strong).
-        if not stable and not machine_group:
+        # Accept the group when ANY of these holds (each is strong evidence of one
+        # backend, given the signature already fixed parent+infra+status+length+
+        # server+ctype+favicon):
+        #  - a shared title backbone (e.g. "<event> - SBB"), or
+        #  - an all-machine-label group (0-11.binance.com style), or
+        #  - a proven SHARED-IP/CNAME infra set (sig[1][0] in {ip, cname}). A large
+        #    group of same-parent hosts on identical IPs with an identical response
+        #    (incl. gated 403/401 microsites with empty titles) is one backend.
+        strong_infra = sig[1][0] in ("ip", "cname")
+        if not stable and not machine_group and not strong_infra:
             continue
         reps = _pick_reps(grp, keep, protected)
         parked = [r for r in grp if r["host"] not in reps]
@@ -324,12 +347,11 @@ def apply_auto(store, services: list, report: dict) -> int:
     items = []
     for g in report["auto"]:
         if g["proof"] == "exact-dup":
-            kept = set(g.get("kept", []))
-            for r in services:
-                d = dict(r)
-                if parent_of(d["host"]) == g["parent"] and d["host"] not in kept \
-                        and d["status"] == 200:
-                    items.append({"service_id": d["id"], "host": d["host"], "parent": g["parent"],
+            # The plan already decided the exact service ids to park.
+            for sid in g.get("parked_candidate_ids", []):
+                d = rows.get(sid)
+                if d:
+                    items.append({"service_id": sid, "host": d["host"], "parent": g["parent"],
                                   "proof": "exact-dup",
                                   "reason": f"exact-dup clone of {g['parent']} ({g['size']} hosts)"})
     for sid in echo_ids:

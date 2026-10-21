@@ -85,15 +85,41 @@ def test_redirects_are_not_grouped():
     assert rep["auto"] == [] and rep["review"] == []
 
 
-def test_distinct_endpoints_empty_title_need_exact_dup_not_template():
-    # empty titles, same infra, but DIFFERENT bodies -> not exact-dup, and empty
-    # title gives no stable words -> not a platform-instance group either.
-    # host names under a non-apex parent so the apex rule is not the reason.
+def test_same_infra_same_fingerprint_different_body_is_review_not_auto():
+    # 20 hosts: same parent, same IP, same status/length/server, empty titles,
+    # but different bodies. This is strong evidence of ONE templated backend
+    # (like SBB events differing byte-wise), so it is offered for REVIEW - never
+    # auto-parked. The agent decides; nothing is removed without judgment.
     svcs = [_svc(i, f"n{i}.svc.acme.com", title="", ctype="application/json",
                  body_hash=f"different{i}") for i in range(20)]
     rep = cluster.plan(svcs, apex_roots={"acme.com"})
-    assert rep["review"] == []
+    assert rep["auto"] == []                 # never auto-parked
+    assert len(rep["review"]) == 1           # offered for agent judgment
+    assert rep["review"][0]["infra"] == "ip"
+
+
+def test_different_infra_never_groups_even_with_same_fingerprint():
+    # the real safety: distinct apps on DIFFERENT IPs never group, whatever the
+    # status or fingerprint. This is what protects separate apps behind a shared
+    # WAF page - they would need the SAME backend IPs to merge.
+    svcs = [_svc(i, f"n{i}.svc.acme.com", title="", status=403,
+                 body_hash="WAF", addresses=(f"10.{i}.0.1",)) for i in range(20)]
+    rep = cluster.plan(svcs, apex_roots={"acme.com"})
+    assert rep["auto"] == [] and rep["review"] == []
+
+
+def test_sbb_gated_403_microsites_on_shared_ip_are_a_review_group():
+    # the REAL SBB case: thousands of event microsites returning 403 (gated), no
+    # title, no server, but all on the SAME IPs under event.sbb.ch. Must be
+    # detected (shared-IP proof carries it), offered for review, not auto-parked.
+    svcs = [_svc(i, f"ev{i}sl.event.sbb.ch", status=403, title="", server="",
+                 length=None, body_hash="", favicon="") for i in range(500)]
+    rep = cluster.plan(svcs, apex_roots={"sbb.ch"})
     assert rep["auto"] == []
+    assert len(rep["review"]) == 1
+    g = rep["review"][0]
+    assert g["parent"] == "event.sbb.ch" and g["infra"] == "ip"
+    assert g["parked_count"] == 497          # keep 3 of 500
 
 
 def test_identical_endpoints_exact_dup_auto_parks():
