@@ -267,6 +267,21 @@ class Assets:
             cur = self.db.execute("UPDATE services SET priority=? WHERE host=?", (priority, pattern))
         return cur.rowcount
 
+    def set_priority_hosts(self, hosts: list[str], priority: int) -> int:
+        """Set the priority of many hosts at once (exact match). For bulk
+        operations like infrastructure-clone parking."""
+        total = 0
+        batch = 500
+        for i in range(0, len(hosts), batch):
+            chunk = [h.strip().lower() for h in hosts[i:i + batch] if h.strip()]
+            if not chunk:
+                continue
+            marks = ",".join("?" * len(chunk))
+            cur = self.db.execute(
+                f"UPDATE services SET priority=? WHERE host IN ({marks})", (priority, *chunk))
+            total += cur.rowcount
+        return total
+
     def takeover_candidates(self) -> list[sqlite3.Row]:
         return list(self.db.execute("SELECT * FROM hosts WHERE takeover_candidate=1 ORDER BY host"))
 

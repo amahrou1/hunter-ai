@@ -63,6 +63,7 @@ Built-in checks
   hk vhost <ip-url>                find virtual hosts on an IP (Host-header fuzz, in-scope names)
   hk cache <url>                   probe web-cache poisoning / deception (detect-only, records a lead)
   hk techhints                     tech-specific test hints for the stacks found on this target
+  hk cluster [--apply]             show infrastructure clone groups (same backend); --apply parks them
   hk wordlist                      path of the built-in discovery list
 
 Reporting
@@ -599,6 +600,37 @@ def cmd_depconf(kit: Kit, args) -> int:
     return 0
 
 
+def cmd_cluster(kit: Kit, args) -> int:
+    from . import cluster
+    cfg = {}
+    try:
+        from . import config
+        cfg = config.load_settings().get("cluster", {}) or {}
+    except Exception:  # noqa: BLE001
+        pass
+    services = kit.store.services()
+    min_cluster = int(cfg.get("min_cluster", cluster.DEFAULT_MIN_CLUSTER))
+    keep = int(cfg.get("keep", cluster.DEFAULT_KEEP))
+    if args.apply:
+        report = cluster.apply(kit.store, services, min_cluster=min_cluster, keep=keep)
+    else:
+        report = cluster.plan(services, min_cluster=min_cluster, keep=keep)
+    if args.json:
+        print(json.dumps(report, indent=1))
+        return 0
+    if not report["clusters"]:
+        print(f"no infrastructure clone groups (>= {min_cluster} same-backend hosts)")
+        return 0
+    verb = "parked" if args.apply else "would park"
+    for c in report["clusters"]:
+        print(f"{c['parent']}: {c['size']} hosts same backend (status {c['status']}) - "
+              f"keep {len(c['kept'])}, {verb} {c['parked_count']}")
+    print(f"\nTotal {verb}: {report['parked']} host(s). "
+          + ("Restore a group with: hk priority '*.<parent>' 50"
+             if args.apply else "Run with --apply to collapse them."))
+    return 0
+
+
 def cmd_techhints(kit: Kit, args) -> int:
     from . import techhints
     fps: list[str] = []
@@ -713,6 +745,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("depconf").set_defaults(func=cmd_depconf)
     a = sub.add_parser("techhints"); a.add_argument("--json", action="store_true")
     a.set_defaults(func=cmd_techhints)
+    a = sub.add_parser("cluster"); a.add_argument("--apply", action="store_true")
+    a.add_argument("--json", action="store_true"); a.set_defaults(func=cmd_cluster)
     sub.add_parser("jsintel").set_defaults(func=cmd_jsintel)
     sub.add_parser("authflows").set_defaults(func=cmd_authflows)
     sub.add_parser("graphql").set_defaults(func=cmd_graphql)

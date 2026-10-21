@@ -130,6 +130,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         # Soft memory cap per external tool (MB). The VPS has 8 GB.
         "mem_mb": 1500,
     },
+    # Collapse infrastructure clones after probe: thousands of per-event/tenant
+    # microsites on one backend (e.g. *.event.sbb.ch) are parked to a few
+    # representatives so the testing phases see distinct apps, not the same app
+    # thousands of times. Behavioural (same response signature), reversible
+    # (hk priority '*.<parent>' 50), and logged. See cluster.py.
+    "cluster": {
+        "enabled": True,
+        "min_cluster": 10,   # a clone group must be at least this big to collapse
+        "keep": 3,           # representatives kept per collapsed group
+    },
     # Per-host adaptive backoff (enforced in the scope proxy). A host that
     # returns 429/503 (or a 403 with a rate-limit signal) is slowed before the
     # next request to it, so we ease off a sore target instead of hammering it

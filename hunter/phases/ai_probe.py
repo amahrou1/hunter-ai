@@ -72,4 +72,33 @@ class AIProbePhase(AgentPhase):
             return PhaseResult(st.PARTIAL, "no live web service found yet")
         if not self.outputs_present(ctx):
             return PhaseResult(st.PARTIAL, f"{total} live service(s); agent did not finish, will continue")
-        return PhaseResult(st.DONE, f"{total} live web service(s) fingerprinted")
+        parked = self._cluster(ctx, store)
+        suffix = f"; collapsed {parked} infra clone(s) to representatives" if parked else ""
+        return PhaseResult(st.DONE, f"{total} live web service(s) fingerprinted{suffix}")
+
+    def _cluster(self, ctx: Context, store: A.Assets) -> int:
+        """Collapse infrastructure clones (e.g. thousands of per-event microsites
+        on one backend) so the testing phases see distinct apps. Deterministic,
+        reversible, logged. Returns how many services were parked to priority 0."""
+        cfg = ctx.settings.get("cluster", {}) or {}
+        if not cfg.get("enabled", True):
+            return 0
+        from .. import cluster
+        services = store.services()  # all services, any priority
+        report = cluster.apply(
+            store, services,
+            min_cluster=int(cfg.get("min_cluster", cluster.DEFAULT_MIN_CLUSTER)),
+            keep=int(cfg.get("keep", cluster.DEFAULT_KEEP)))
+        if report["parked"]:
+            for c in report["clusters"][:10]:
+                ctx.log(f"    clone group {c['parent']} ({c['size']} hosts, status "
+                        f"{c['status']}): kept {len(c['kept'])}, parked {c['parked_count']}")
+                store.set_host_note(c["kept"][0], cluster_note=(
+                    f"representative of {c['size']} same-backend hosts under {c['parent']} "
+                    f"(parked {c['parked_count']} clones; restore with hk priority '*.{c['parent']}' 50)"))
+            ctx.notify("Infrastructure clones collapsed",
+                       f"{report['parked']} clone host(s) across {len(report['clusters'])} group(s) "
+                       f"parked to representatives, so testing focuses on distinct apps. "
+                       f"Largest: {report['clusters'][0]['parent']} "
+                       f"({report['clusters'][0]['size']} hosts).", "info")
+        return report["parked"]
