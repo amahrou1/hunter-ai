@@ -332,6 +332,20 @@ def cmd_scope(args) -> int:
         verdict = "ALLOWED" if decision.allowed else "BLOCKED"
         _print(f"{verdict}: {args.value} ({decision.reason}{': ' + decision.matched if decision.matched else ''})")
         return 0 if decision.allowed else 3
+    if args.action == "candidates":
+        from . import assets as A
+        from . import state as st
+        store = A.Assets(st.State(target.state_db).db)
+        rows = store.candidates()
+        if not rows:
+            _print(f"No scope candidates for '{target.name}' (none discovered, or the scope has no "
+                   f"brand pattern / ownership clause to expand).")
+            return 0
+        added = [r for r in rows if r["tier"] in ("added", "approved")]
+        _print(f"Scope candidates for '{target.name}': {len(added)} in scope, {len(rows)} total\n")
+        for r in rows:
+            _print(f"  {r['tier']:16} {r['domain']:42} {r['source']:13} {r['reason'] or ''}")
+        return 0
     # Lead with the LIVE enforced rate from scope.json (the source of truth the
     # proxy reads). The review file below is frozen at intake time, so its rate
     # line goes stale after `hunt rate` - showing the live value first stops that
@@ -778,7 +792,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_models)
     p = sub.add_parser("scope")
     p.add_argument("target")
-    p.add_argument("action", nargs="?", choices=["show", "check"], default="show")
+    p.add_argument("action", nargs="?", choices=["show", "check", "candidates"], default="show")
     p.add_argument("value", nargs="?")
     p.set_defaults(func=cmd_scope)
     p = sub.add_parser("handle")

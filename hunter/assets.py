@@ -114,6 +114,19 @@ CREATE TABLE IF NOT EXISTS cluster_restored (
     parent TEXT PRIMARY KEY,          -- a family the operator restored: never re-park it
     restored_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS scope_candidates (
+    domain TEXT PRIMARY KEY,          -- the candidate apex domain (e.g. autoscout24.nl)
+    pattern TEXT,                     -- the brand/pattern or 'ownership' it came from
+    source TEXT NOT NULL,             -- how it was found: tld-sweep | crt.sh | reverse-whois | hreflang | agent | recon
+    tier TEXT NOT NULL,               -- auto | review | reject | added | approved | rejected-by-agent
+    subdomains INTEGER NOT NULL DEFAULT 1,  -- add as *.domain (1) or just the apex (0)
+    evidence TEXT,                    -- JSON: the raw evidence dict
+    signals TEXT,                     -- JSON: the scored signals
+    reason TEXT,                      -- one-line verdict reason
+    decided_by TEXT,                  -- code | agent | operator
+    first_seen TEXT NOT NULL,
+    decided_at TEXT
+);
 """
 
 # Hosts whose A/AAAA or CNAME point at these are almost never the program's
@@ -366,6 +379,50 @@ class Assets:
 
     def takeover_candidates(self) -> list[sqlite3.Row]:
         return list(self.db.execute("SELECT * FROM hosts WHERE takeover_candidate=1 ORDER BY host"))
+
+    # scope candidates (discovery) -----------------------------------------
+    def record_candidate(self, domain: str, *, pattern: str = "", source: str,
+                         tier: str, subdomains: bool = True, evidence=None, signals=None,
+                         reason: str = "", decided_by: str = "code") -> None:
+        """Insert or update a discovered scope candidate with its evidence and
+        verdict. The verdict tier is advisory until it is promoted to 'added'."""
+        import json as _json
+        domain = (domain or "").strip().lower().rstrip(".")
+        if not domain:
+            return
+        ev = _json.dumps(evidence) if evidence is not None else None
+        sg = _json.dumps(signals) if signals is not None else None
+        existing = self.db.execute("SELECT domain FROM scope_candidates WHERE domain=?", (domain,)).fetchone()
+        if existing:
+            self.db.execute(
+                "UPDATE scope_candidates SET pattern=?, source=?, tier=?, subdomains=?, evidence=?, "
+                "signals=?, reason=?, decided_by=?, decided_at=? WHERE domain=?",
+                (pattern, source, tier, int(subdomains), ev, sg, reason, decided_by, now(), domain))
+        else:
+            self.db.execute(
+                "INSERT INTO scope_candidates(domain, pattern, source, tier, subdomains, evidence, "
+                "signals, reason, decided_by, first_seen, decided_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (domain, pattern, source, tier, int(subdomains), ev, sg, reason, decided_by, now(), now()))
+
+    def candidates(self, tier: str | None = None) -> list[sqlite3.Row]:
+        if tier:
+            return list(self.db.execute(
+                "SELECT * FROM scope_candidates WHERE tier=? ORDER BY domain", (tier,)))
+        return list(self.db.execute("SELECT * FROM scope_candidates ORDER BY tier, domain"))
+
+    def candidate(self, domain: str) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM scope_candidates WHERE domain=?",
+                               ((domain or "").strip().lower().rstrip("."),)).fetchone()
+
+    def set_candidate_tier(self, domain: str, tier: str, decided_by: str, reason: str = "") -> bool:
+        domain = (domain or "").strip().lower().rstrip(".")
+        row = self.candidate(domain)
+        if row is None:
+            return False
+        self.db.execute(
+            "UPDATE scope_candidates SET tier=?, decided_by=?, decided_at=?, reason=COALESCE(NULLIF(?,''), reason) "
+            "WHERE domain=?", (tier, decided_by, now(), reason, domain))
+        return True
 
     # services -------------------------------------------------------------
     def upsert_service(self, host: str, port: int, scheme: str, **fields) -> None:

@@ -247,3 +247,56 @@ def decide(candidate: str, ev: dict, owner: dict, *, require_resolves: bool = Tr
         return Verdict(REVIEW, signals, "; ".join(s.detail for s in (strong + medium)[:3]))
 
     return Verdict(DECLINE, signals, "no evidence this domain belongs to the owner")
+
+
+# --------------------------------------------------------------------------
+# Promotion: candidates the store marks added/approved -> scope.expanded
+# --------------------------------------------------------------------------
+
+# Tiers whose candidates belong in the live scope (tested).
+ADMITTED_TIERS = ("added", "approved")
+
+
+def sync_scope_expanded(store, scope, scope_file, save_fn) -> int:
+    """Make scope.expanded exactly match the admitted candidates in the store,
+    skipping any the policy already lists or excludes. Writes scope.json only if
+    it changed (the running proxy re-reads it live). Returns how many are now in
+    the expanded list. Idempotent - safe to call every pass."""
+    from . import scope as sc
+
+    wanted = []
+    seen = set()
+    existing_hosts = {a.host for a in scope.in_scope if a.host}
+    for row in store.candidates():
+        if row["tier"] not in ADMITTED_TIERS:
+            continue
+        domain = row["domain"]
+        if not domain or domain in seen:
+            continue
+        # Never shadow something the policy already handles, and never add a
+        # domain the policy or operator put out of scope. An out-of-scope entry
+        # on the same registrable domain (its apex OR its wildcard, e.g.
+        # `*.autoscout24.nl` or `autoscout24.nl`) means discovery must not add
+        # it back - the exclusion wins by root, not just by exact host match.
+        if domain in existing_hosts:
+            continue
+        excluded = any(
+            o.host == domain or (o.kind == "wildcard" and o.host == domain)
+            or sc.asset_matches(o, domain) or sc.asset_matches(o, "_." + domain)
+            for o in (*scope.operator_out, *scope.out_of_scope) if o.kind != "url")
+        if excluded:
+            continue
+        raw = f"*.{domain}" if row["subdomains"] else domain
+        try:
+            asset = sc.parse_asset(raw)
+        except sc.AssetError:
+            continue
+        wanted.append(asset)
+        seen.add(domain)
+
+    new_raws = sorted(a.raw for a in wanted)
+    old_raws = sorted(a.raw for a in scope.expanded)
+    if new_raws != old_raws:
+        scope.expanded = wanted
+        save_fn(scope, scope_file)
+    return len(wanted)

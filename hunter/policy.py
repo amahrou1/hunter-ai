@@ -464,6 +464,11 @@ def render_review(scope: sc.Scope, build: BuildResult, target_name: str) -> str:
              f"- Researcher email: {rules.get('researcher_email') or rules.get('email_requirement') or 'not required'}",
              "", "## In scope (will be tested)", ""]
     lines += [f"- `{a.raw}` ({a.kind})" for a in scope.in_scope] or ["- none"]
+    if scope.expanded:
+        lines += ["", "## Discovered and added by the run (ownership proven)", ""]
+        lines += [f"- `{a.raw}` ({a.kind})" for a in scope.expanded]
+        lines += ["", "See `hunt scope <target> candidates` for every candidate and why each was added, "
+                  "left for review, or rejected."]
     lines += ["", "## Out of scope (blocked)", ""]
     lines += [f"- `{a.raw}` ({a.kind})" for a in scope.out_of_scope] or ["- none"]
     patterns = rules.get("scope_patterns") or []
