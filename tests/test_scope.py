@@ -14,6 +14,11 @@ from hunter.scope import Scope, parse_asset
     ("https://app.example.com:8443", "url", "app.example.com", "", 8443),
     ("https://*.example.com", "wildcard", "example.com", "", None),
     (".example.com", "wildcard", "example.com", "", None),
+    # Leading-dot WITH a scheme (Intigriti export form). ".example.de" means
+    # the apex and all subdomains, i.e. *.example.de - must parse the same as
+    # the scheme-less ".example.de" above, not fail as an invalid host.
+    ("http://.example.de/", "wildcard", "example.de", "", None),
+    ("https://.example.com.tr/", "wildcard", "example.com.tr", "", None),
     ("`api.example.com`", "domain", "api.example.com", "", None),
     ("API.Example.COM.", "domain", "api.example.com", "", None),
     ("10.0.0.1", "ip", "10.0.0.1", "", None),
@@ -27,7 +32,11 @@ def test_parse_asset(raw, kind, host, path, port):
     assert (asset.kind, asset.host, asset.path, asset.port) == (kind, host, path, port)
 
 
-@pytest.mark.parametrize("raw", ["example.*", "ftp://x.example.com", "not a host", "", "*.*.example.com"])
+@pytest.mark.parametrize("raw", ["example.*", "ftp://x.example.com", "not a host", "", "*.*.example.com",
+                                 # trailing-TLD double wildcard must stay rejected: auto-expanding it to
+                                 # "any TLD" is dangerous scope broadening. The explicit per-TLD entries
+                                 # (recovered by the leading-dot fix) cover the real surface safely.
+                                 "*.autoscout24.*"])
 def test_unclear_entries_rejected(raw):
     with pytest.raises(sc.AssetError):
         parse_asset(raw)

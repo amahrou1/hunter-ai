@@ -123,6 +123,13 @@ def parse_asset(raw: str, kind: str | None = None) -> Asset:
         wildcard = False
         if netloc_host.startswith("*."):
             wildcard, netloc_host = True, netloc_host[2:]
+        elif netloc_host.startswith("."):
+            # Leading-dot convention (Intigriti exports "http://.example.de/"):
+            # ".example.de" means the apex and all subdomains, i.e. *.example.de.
+            # The bare-host branch already handles a scheme-less ".example.de";
+            # the URL branch must too, or every leading-dot country domain is
+            # dropped as "not a valid host name" (the AutoScout24 symptom).
+            wildcard, netloc_host = True, netloc_host[1:]
         if "*" in netloc_host:
             raise AssetError(f"'{raw}' has a wildcard that is not of the form *.domain")
         if not _is_ip(netloc_host):
