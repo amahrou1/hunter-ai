@@ -84,6 +84,10 @@ def test_cli_models_switch(env, capsys):
 
 def test_cli_run_and_status(env, make_target, capsys, monkeypatch):
     from pathlib import Path
+    from hunter.proxy import mitmdump_bin
+    import pytest
+    if mitmdump_bin() is None:
+        pytest.skip("mitmproxy not installed: intake's scope-guard self-test cannot pass here")
     policies = Path(__file__).parent / "policies"
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "draft")
     monkeypatch.setenv("FAKE_CLAUDE_DRAFTS", str(policies / "intigriti_acme.draft.json"))
