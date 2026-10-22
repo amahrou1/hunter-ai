@@ -203,10 +203,13 @@ def _strs(values) -> list[str]:
 def build_scope(draft: dict, policy_text: str, overrides_text: str, settings: dict) -> BuildResult:
     result = BuildResult(scope=sc.Scope())
     scope = result.scope
-    seen: set[tuple[str, str, str, int | None]] = set()
+    seen: set[tuple] = set()
 
     def add(target: list, asset: sc.Asset) -> None:
-        key = (asset.kind, asset.host or asset.raw, asset.path, asset.port)
+        # Include the label fragment/mode so sibling infix wildcards on one root
+        # (*dev*.x.com, *test*.x.com, *sandbox*.x.com) are not deduped to one.
+        key = (asset.kind, asset.host or asset.raw, asset.path, asset.port,
+               asset.label_frag, asset.label_mode)
         if key not in seen or target is scope.out_of_scope:
             target.append(asset)
             seen.add(key)
@@ -223,6 +226,10 @@ def build_scope(draft: dict, policy_text: str, overrides_text: str, settings: di
             excl = sc.parse_any_tld_exclusion(raw)
             if excl is not None:
                 scope.out_of_scope.append(excl)
+                continue
+            lw = sc.parse_label_wildcard(raw)   # e.g. exclude *staging*.example.com
+            if lw is not None:
+                scope.out_of_scope.append(lw)
                 continue
             scope.ambiguities.append({"item": raw, "why": f"out-of-scope entry could not be read ({exc}); "
                                       "anything that looks like it will not be tested"})
@@ -259,6 +266,12 @@ def build_scope(draft: dict, policy_text: str, overrides_text: str, settings: di
         except sc.AssetError as exc:
             if add_pattern(raw):
                 continue  # it is a brand pattern, not a failed asset
+            lw = sc.parse_label_wildcard(raw)
+            if lw is not None and sc.appears_in_policy(lw, policy_text):
+                # Infix label wildcard like *dev*.autoscout24.com: a real asset,
+                # just a form parse_asset keeps out of the normal path.
+                add(scope.in_scope, lw)
+                continue
             scope.ambiguities.append({"item": raw, "why": f"could not be read ({exc}), so it is not tested"})
             continue
         if not sc.appears_in_policy(asset, policy_text):
@@ -292,11 +305,23 @@ def build_scope(draft: dict, policy_text: str, overrides_text: str, settings: di
                 scope.out_of_scope.append(excl)
                 result.review.append(f"Override: '{raw}' set OUT of scope by you (every TLD).")
                 continue
+            lw = sc.parse_label_wildcard(raw)
+            if lw is not None:
+                scope.out_of_scope.append(lw)
+                result.review.append(f"Override: '{raw}' set OUT of scope by you.")
+                continue
             result.problems.append(f"scope-overrides.txt: 'out {raw}' cannot be read ({exc})")
     for raw in ins:
         try:
             asset = sc.parse_asset(raw)
         except sc.AssetError as exc:
+            lw = sc.parse_label_wildcard(raw)
+            if lw is not None:
+                add(scope.in_scope, lw)
+                scope.ambiguities = [a for a in scope.ambiguities
+                                     if a["item"].strip().lower() != raw.strip().lower()]
+                result.review.append(f"Override: '{raw}' set IN scope by you.")
+                continue
             result.problems.append(f"scope-overrides.txt: 'in {raw}' cannot be read ({exc})")
             continue
         add(scope.in_scope, asset)

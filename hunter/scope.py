@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
-NETWORK_KINDS = ("wildcard", "domain", "url", "ip", "cidr")
+NETWORK_KINDS = ("wildcard", "domain", "url", "ip", "cidr", "label_wildcard")
 OTHER_KINDS = ("mobile", "source_code", "executable", "other")
 ALL_KINDS = NETWORK_KINDS + OTHER_KINDS
 
@@ -55,6 +55,11 @@ class Asset:
     wildcard_host: bool = False  # url entries like https://*.example.com/
     suffix_match: bool = False   # glued wildcard like *us.tiktokv.com: match any host ending in `host`
     any_tld: bool = False        # exclusion like support.binance.*: `host` is the stem, any TLD after it
+    # Infix label wildcard like *dev*.autoscout24.com: `host` is the root
+    # (autoscout24.com) and label_frag/label_mode constrain the leftmost label.
+    # mode: "contains" (*dev*), "prefix" (dev*), "suffix" (*dev).
+    label_frag: str = ""
+    label_mode: str = ""
 
     @property
     def is_network(self) -> bool:
@@ -230,6 +235,56 @@ def parse_pattern(raw: str) -> dict | None:
 _STEM_RE = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
+_LABEL_FRAG_RE = re.compile(r"^[a-z0-9-]{1,63}$")
+
+
+def parse_label_wildcard(raw: str) -> Asset | None:
+    """Recognise an INFIX label wildcard like `*dev*.autoscout24.com`,
+    `dev*.autoscout24.de`, `*test.example.com`, optionally with a URL scheme and
+    a trailing `/*` path. Returns a label_wildcard Asset, or None if `raw` is
+    not of this form.
+
+    Meaning: any host under the root (autoscout24.com) whose LEFTMOST label
+    matches the fragment - contains it (*dev*), starts with it (dev*) or ends
+    with it (*dev). The root itself must be a normal registrable host with no
+    wildcard; only the leftmost label carries the `*`. This is narrower than
+    `*.root` (it does not match every subdomain, only ones whose first label
+    matches), so it never broadens scope beyond what the program wrote."""
+    value = _clean(raw).lower().rstrip("/")
+    port = None
+    if "://" in value:
+        scheme, _, rest = value.partition("://")
+        if scheme not in ("http", "https", "ws", "wss"):
+            return None
+        value = rest.split("/", 1)[0]          # drop any /* path
+    value = value.split("/", 1)[0]
+    if ":" in value:                           # strip an explicit port
+        value, _, p = value.rpartition(":")
+        if not p.isdigit():
+            return None
+    # The leftmost label must carry the wildcard; no other label may.
+    first, dot, root = value.partition(".")
+    if not dot or "*" not in first or "*" in root:
+        return None
+    # root must be a clean host (no wildcard, valid labels).
+    if not _HOST_RE.match(root):
+        return None
+    # Read the star position on the first label.
+    stars = first.count("*")
+    if stars == 2 and first.startswith("*") and first.endswith("*"):
+        frag, mode = first[1:-1], "contains"
+    elif stars == 1 and first.startswith("*"):
+        frag, mode = first[1:], "suffix"
+    elif stars == 1 and first.endswith("*"):
+        frag, mode = first[:-1], "prefix"
+    else:
+        return None                            # e.g. de*v, too ambiguous to read
+    if not frag or not _LABEL_FRAG_RE.match(frag):
+        return None
+    return Asset(kind="label_wildcard", raw=raw.strip(), host=root,
+                 label_frag=frag, label_mode=mode)
+
+
 def parse_any_tld_exclusion(raw: str) -> Asset | None:
     """An OUT-of-scope entry with a trailing TLD wildcard, e.g. `support.binance.*`
     or `*.support.autoscout24.*`: exclude that name on every TLD. Only for
@@ -255,7 +310,30 @@ def parse_any_tld_exclusion(raw: str) -> Asset | None:
 # Matching
 # --------------------------------------------------------------------------
 
+def _label_frag_matches(frag: str, mode: str, label: str) -> bool:
+    if mode == "contains":
+        return frag in label
+    if mode == "prefix":
+        return label.startswith(frag)
+    if mode == "suffix":
+        return label.endswith(frag)
+    return False
+
+
 def _host_matches(asset: Asset, host: str) -> bool:
+    if asset.kind == "label_wildcard":
+        # host must sit under the root, and its label just left of the root must
+        # match the fragment. *dev*.autoscout24.com matches api-dev.autoscout24.com
+        # (label "api-dev" contains "dev") and dev.autoscout24.com, not
+        # api.autoscout24.com and not the apex autoscout24.com.
+        suffix = "." + asset.host
+        if not host.endswith(suffix) or host == asset.host:
+            return False
+        left = host[: -len(suffix)]
+        if not left:
+            return False
+        leftmost = left.rsplit(".", 1)[-1]     # the label immediately left of the root
+        return _label_frag_matches(asset.label_frag, asset.label_mode, leftmost)
     if asset.any_tld:
         # stem "support.binance" matches support.binance.com, x.support.binance.com,
         # support.binance.com.tr: strip a 1- or 2-label suffix and compare.
@@ -373,7 +451,10 @@ class Scope:
         return [a for a in (*self.in_scope, *self.expanded) if a.is_network]
 
     def wildcard_roots(self) -> list[str]:
-        return sorted({a.host for a in (*self.in_scope, *self.expanded) if a.kind == "wildcard"})
+        # Both plain wildcards (*.root) and infix label wildcards (*dev*.root)
+        # need their root enumerated so recon finds the matching subdomains.
+        return sorted({a.host for a in (*self.in_scope, *self.expanded)
+                       if a.kind in ("wildcard", "label_wildcard")})
 
     def scope_patterns(self) -> list[dict]:
         """Brand-on-any-TLD / ownership patterns recorded at intake, for the
@@ -413,7 +494,9 @@ class Scope:
                                  path=item.get("path", ""), port=item.get("port"),
                                  scheme=item.get("scheme", ""), wildcard_host=item.get("wildcard_host", False),
                                  suffix_match=item.get("suffix_match", False),
-                                 any_tld=item.get("any_tld", False)))
+                                 any_tld=item.get("any_tld", False),
+                                 label_frag=item.get("label_frag", ""),
+                                 label_mode=item.get("label_mode", "")))
             return out
         return cls(
             in_scope=assets(data.get("in_scope")),
@@ -519,6 +602,12 @@ def appears_in_policy(asset: Asset, policy_text: str) -> bool:
     host = asset.host
     escaped = re.escape(host)
     standalone = re.search(rf"(?<![a-z0-9_.-]){escaped}(?![a-z0-9_-])", text)
+    if asset.kind == "label_wildcard":
+        # The policy names it as "*frag*.root" (or frag*./*frag.): look for the
+        # fragment-and-root form, so the root preceded by the wildcard label
+        # still counts as named.
+        frag = re.escape(asset.label_frag)
+        return bool(re.search(rf"\*?{frag}\*?\.{escaped}(?![a-z0-9_-])", text) or standalone)
     if asset.kind == "wildcard" or asset.wildcard_host:
         starred = re.search(rf"\*\.{escaped}(?![a-z0-9_-])", text)
         dotted = re.search(rf"(?<![a-z0-9_*-])\.{escaped}(?![a-z0-9_-])", text)
