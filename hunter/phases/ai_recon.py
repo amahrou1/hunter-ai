@@ -20,7 +20,7 @@ class AIReconPhase(AgentPhase):
     name = "Recon: subdomains, DNS, takeover candidates"
     version = "2.0"
     build_step = 4
-    requires = ("00-intake",)
+    requires = ("00-intake", "01c-expand")
     role = "scanner"
     prior_scope = "hosts"
     max_turns = 200

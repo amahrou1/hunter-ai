@@ -80,6 +80,98 @@ SHARED_ASN_NAMES = ("cloudflare", "amazon", "aws", "google", "microsoft", "azure
 STRONG, MEDIUM, REJECT = "strong", "medium", "reject"
 AUTO, REVIEW, DECLINE = "auto", "review", "reject"
 
+# Common TLDs a global brand actually operates on: every ccTLD plus the major
+# gTLDs and the frequent two-level suffixes. A brand-on-any-TLD sweep tries
+# `brand.<suffix>` for each of these (DNS only). This is NOT the full public
+# suffix list (~9000) - the long tail is left to the AI's cert/reverse-WHOIS
+# discovery, which finds the unusual ones. Keeping it to the realistic set
+# keeps the sweep fast and the false-positive surface small.
+COMMON_SUFFIXES = (
+    # major gTLDs
+    "com", "net", "org", "info", "biz", "io", "co", "app", "dev", "cloud", "ai",
+    "shop", "store", "online", "site", "tech", "group", "global", "world",
+    # ccTLDs (apex)
+    "de", "at", "ch", "fr", "it", "es", "pt", "nl", "be", "lu", "uk", "ie", "dk",
+    "se", "no", "fi", "is", "pl", "cz", "sk", "hu", "ro", "bg", "hr", "si", "rs",
+    "gr", "tr", "ua", "ru", "by", "lt", "lv", "ee", "us", "ca", "mx", "br", "ar",
+    "cl", "co", "pe", "au", "nz", "jp", "cn", "kr", "in", "sg", "hk", "tw", "my",
+    "th", "id", "ph", "vn", "ae", "sa", "il", "za", "eg", "ma", "ng", "ke",
+    # frequent two-level suffixes
+    "co.uk", "org.uk", "com.tr", "com.br", "com.au", "com.mx", "com.ar", "co.jp",
+    "co.kr", "co.in", "com.cn", "com.sg", "com.hk", "com.tw", "com.my", "co.za",
+    "co.nz", "com.ua", "com.pl", "co.il", "com.sa", "com.eg",
+)
+
+
+def candidate_domains(brand: str, suffixes=COMMON_SUFFIXES) -> list[str]:
+    """Every `brand.<suffix>` to try for a brand-on-any-TLD pattern."""
+    brand = (brand or "").strip().lower()
+    if not brand or "." in brand or "*" in brand:
+        return []
+    return [f"{brand}.{s}" for s in suffixes]
+
+
+# --------------------------------------------------------------------------
+# Passive evidence gathering (network; isolated so the scorer stays pure)
+# --------------------------------------------------------------------------
+
+def resolve_evidence(domain: str, *, timeout: float = 4.0) -> dict:
+    """Resolve a domain and collect the cheap, passive evidence the scorer uses:
+    whether it resolves, its A records, and its authoritative nameservers. DNS
+    only - no HTTP, nothing that touches the domain's web server. Returns an
+    evidence dict (possibly just {'resolves': False})."""
+    import socket
+    ev: dict = {}
+    try:
+        infos = socket.getaddrinfo(domain, None, proto=socket.IPPROTO_TCP)
+        ips = sorted({i[4][0] for i in infos})
+        ev["resolves"] = bool(ips)
+        ev["ips"] = ips
+    except (socket.gaierror, OSError, UnicodeError):
+        ev["resolves"] = False
+        return ev
+    ev["nameservers"] = _nameservers(domain, timeout)
+    return ev
+
+
+def _nameservers(domain: str, timeout: float) -> list[str]:
+    """Authoritative NS for a domain's registrable root, via dnspython if
+    present, else an empty list (the sweep still works, just with less
+    evidence)."""
+    try:
+        import dns.resolver  # type: ignore
+    except ImportError:
+        return []
+    root = _registrable_root(domain)
+    try:
+        resolver = dns.resolver.Resolver()
+        resolver.lifetime = resolver.timeout = timeout
+        answers = resolver.resolve(root, "NS")
+        return sorted({str(r.target).rstrip(".").lower() for r in answers})
+    except Exception:  # noqa: BLE001 - any DNS failure just means no NS evidence
+        return []
+
+
+def seed_owner_context(brand: str, legal_names, seed_domains, ownership: bool = False) -> dict:
+    """Build the owner context from the seed (known-owned) domains: learn their
+    nameserver roots so a candidate sharing them scores as same-owner."""
+    seeds = {d.strip().lower().rstrip(".") for d in seed_domains if d}
+    ns_roots = set()
+    for d in sorted(seeds)[:8]:          # a few seeds are enough to learn the NS operator
+        for ns in _nameservers(d, 4.0):
+            if not _ns_is_shared(ns):
+                ns_roots.add(_registrable_root(ns))
+    return {
+        "brand": (brand or "").strip().lower(),
+        "legal_names": [n for n in (legal_names or []) if n],
+        "seed_domains": seeds,
+        "seed_ns_roots": ns_roots,
+        "seed_soa_rnames": set(),
+        "seed_spf_includes": set(),
+        "seed_asns": set(),
+        "is_ownership": bool(ownership),
+    }
+
 
 @dataclass
 class Signal:
