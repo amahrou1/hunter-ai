@@ -105,6 +105,50 @@ _HOST_RE = re.compile(r"(?<![\w@/.-])((?:[a-z0-9_-]+\.)+[a-z][a-z0-9-]{1,62})(?!
 _RAW_TCP = re.compile(r"\b(?:nc|ncat|netcat|telnet|socat)\b\s+(?:-\S+\s+)*([\w.-]+)")
 _SCLIENT = re.compile(r"s_client\b[^\n;|&]*-connect\s+([\w.-]+)")
 
+# `hk` is the run's own toolkit: every subcommand that contacts a host checks
+# scope itself first (kit.py) and fetches through the scope proxy regardless, so
+# a hostname in an `hk` argument is never an un-checked network contact. Many hk
+# subcommands (note, progress, notify, finding, add, priority, filter, mark,
+# import, secrets) take free text or local paths that legitimately quote
+# in-scope hostnames as DATA. Statically scanning that text for in-scope hosts
+# only produces false blocks - it stopped the probe agent from recording its own
+# progress and findings and drove it into max_turns. So a command segment whose
+# program is `hk` is not host-scanned here (its other guards still apply).
+# Pure shell plumbing that makes no request is treated the same way.
+# Only `hk` (which scope-checks its own contact) and shell text/plumbing that
+# opens no socket. Deliberately NOT here: python/sqlite3/curl/wget/nc/dnsx/ffuf
+# and anything else that can make a request - those stay fully host-scanned.
+_SAFE_LEADERS = frozenset((
+    "hk", "echo", "printf", "head", "tail", "tr", "cut", "awk",
+    "jq", "wc", "sort", "uniq", "date", "true", "sleep", "comm", "paste", "column",
+))
+_SEG_SPLIT = re.compile(r"(?:\|\||&&|\||;|\n|&(?!&))")
+_LEADER_RE = re.compile(r"^\s*(?:[A-Za-z_][\w]*=\S*\s+)*([A-Za-z0-9_./-]+)")
+
+
+def _segment_leader(segment: str) -> str:
+    """The program a shell segment runs (after any VAR=val prefixes), lowercased
+    and stripped of a directory; '' if the segment has no command word."""
+    match = _LEADER_RE.match(segment)
+    if not match:
+        return ""
+    return match.group(1).rsplit("/", 1)[-1].lower()
+
+
+def _host_check_segments(text: str) -> list[str]:
+    """Command segments whose host tokens must be scope-checked here. A segment
+    led by `hk` (scope-checks its own contact) or by pure shell plumbing that
+    makes no network request is left out, so a hostname quoted as data in it
+    cannot cause a false block."""
+    out = []
+    for segment in _SEG_SPLIT.split(text):
+        if not segment.strip():
+            continue
+        if _segment_leader(segment) in _SAFE_LEADERS:
+            continue
+        out.append(segment)
+    return out
+
 
 class Verdict(Exception):
     pass
@@ -234,33 +278,37 @@ def check_command(command: str, scope: sc.Scope | None, protected: list[str], ex
             raise Verdict("call the tools by name (the wrappers add the scope proxy), not from their folder")
 
     hosts: list[str] = []
-    for url in _URL_RE.findall(text):
-        try:
-            host = re.split(r"[/:?#]", url.split("://", 1)[1].split("@")[-1], maxsplit=1)[0]
-        except IndexError:
-            continue
-        hosts.append(host)
-    for match in _IP_RE.finditer(text):
-        try:
-            ipaddress.ip_address(match.group(1))
-        except ValueError:
-            continue
-        hosts.append(match.group(1))
     roots = _roots(scope)
     # The bare root of an in-scope wildcard (bol.com for *.bol.com) is how
     # passive tools are told what to enumerate (subfinder -d bol.com); it is
     # not checked as a host here. Contacting it over HTTP still goes through
     # the proxy, which blocks it if it is not in scope.
     wildcard_roots = set(scope.wildcard_roots()) if scope else set()
-    for match in _HOST_RE.finditer(text):
-        token = match.group(1).lower()
-        if token in wildcard_roots:
-            continue
-        if any(token == r or token.endswith("." + r) for r in roots):
-            hosts.append(token)
-    for pattern in (_RAW_TCP, _SCLIENT):
-        for match in pattern.finditer(text):
+    # Only scan segments that actually make a request. An `hk ...` segment
+    # scope-checks its own contact, so hostnames quoted as data in it (hk note,
+    # hk progress, hk finding) are not blocked here.
+    for segment in _host_check_segments(text):
+        for url in _URL_RE.findall(segment):
+            try:
+                host = re.split(r"[/:?#]", url.split("://", 1)[1].split("@")[-1], maxsplit=1)[0]
+            except IndexError:
+                continue
+            hosts.append(host)
+        for match in _IP_RE.finditer(segment):
+            try:
+                ipaddress.ip_address(match.group(1))
+            except ValueError:
+                continue
             hosts.append(match.group(1))
+        for match in _HOST_RE.finditer(segment):
+            token = match.group(1).lower()
+            if token in wildcard_roots:
+                continue
+            if any(token == r or token.endswith("." + r) for r in roots):
+                hosts.append(token)
+        for pattern in (_RAW_TCP, _SCLIENT):
+            for match in pattern.finditer(segment):
+                hosts.append(match.group(1))
     for host in hosts:
         host = _as_host(host)
         if host is None:

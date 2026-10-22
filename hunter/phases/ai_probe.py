@@ -83,11 +83,22 @@ class AIProbePhase(AgentPhase):
         total = store.service_count()
         if total == 0:
             return PhaseResult(st.PARTIAL, "no live web service found yet")
-        if not self.outputs_present(ctx):
+        # Ground truth: probe's substantive work is "every resolved in-scope host
+        # has been probed". When essentially none are left to probe, the phase is
+        # complete even if the agent's narrative handoff is thin or it ran out of
+        # turns on bookkeeping - the resolvable surface is covered. Without this a
+        # fully-probed run can loop PARTIAL for hours, re-probing nothing (the
+        # Mercedes symptom: 4741/4743 probed, stuck PARTIAL). A tiny unprobed tail
+        # (DNS flaps, per-host timeouts) does not hold the phase open.
+        resolved = len(store.hosts(scope=A.IN, resolved=True))
+        remaining = len(store.unprobed_hosts())
+        covered = resolved > 0 and remaining <= max(5, int(resolved * 0.005))
+        if not self.outputs_present(ctx) and not covered:
             return PhaseResult(st.PARTIAL, f"{total} live service(s); agent did not finish, will continue")
         parked = self._cluster(ctx, store)
         suffix = f"; collapsed {parked} infra clone(s) to representatives" if parked else ""
-        return PhaseResult(st.DONE, f"{total} live web service(s) fingerprinted{suffix}")
+        tail = f" ({remaining} host(s) unprobed - DNS/timeout tail)" if remaining else ""
+        return PhaseResult(st.DONE, f"{total} live web service(s) fingerprinted{tail}{suffix}")
 
     def _cluster(self, ctx: Context, store: A.Assets) -> int:
         """Collapse infrastructure clones so the testing phases see distinct apps.
