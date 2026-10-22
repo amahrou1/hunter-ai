@@ -1,0 +1,249 @@
+"""Ownership scoring for scope discovery.
+
+The discovery phase (01c-expand) gathers passive evidence about a candidate
+apex domain - its nameservers, TLS-certificate names and issuer org, RDAP
+registrant, MX/SPF, resolved IPs/ASN, whether it is parked - and this module
+turns that evidence into a decision:
+
+    auto    -> add to scope now (strong proof of same ownership)
+    review  -> let the AI agent decide, with a written reason (some proof)
+    reject  -> never add (parked, for-sale, different owner, or no proof)
+
+This is deliberately pure and offline: it takes evidence in, returns a verdict
+out, and makes no network calls, so the whole ownership decision is testable
+and lives in code - the model can gather and propose, but it cannot widen scope
+past what the evidence supports. Same split as the scope proxy and guard.
+
+Evidence is a dict built by the phase; every field is optional:
+    {
+      "nameservers": ["ns1.example.net", ...],      # candidate's NS
+      "cert_sans": ["autoscout24.nl", "www...", ...],# names on candidate's cert
+      "cert_org": "AutoScout24 GmbH",                # cert subject O=
+      "rdap_org": "AutoScout24 GmbH",                # RDAP/WHOIS registrant org
+      "rdap_created": "2001-03-...",                 # registration date (ISO)
+      "mx_hosts": ["aspmx.l.google.com", ...],
+      "spf_includes": ["_spf.google.com", ...],
+      "soa_rname": "hostmaster.autoscout24.com",
+      "ips": ["1.2.3.4"], "asn": "AS1234", "asn_name": "AUTOSCOUT24",
+      "resolves": true,
+      "parked": false,                               # heuristic set by phase
+      "linked_from_scope": true,                     # found via hreflang on an in-scope host
+      "shared_hosting_ns": false,                    # NS belongs to a mass host/CDN
+      "shared_hosting_ip": false,                    # IP belongs to a CDN/cloud
+    }
+
+Owner context is built from the seed (known-owned) domains and the policy:
+    {
+      "brand": "autoscout24",
+      "legal_names": ["autoscout24 gmbh", "autoscout24 ag"],  # lowercased
+      "seed_nameservers": {"ns1.autoscout24.com", ...},       # NS of seeds
+      "seed_ns_roots": {"autoscout24.com", ...},              # registrable root of seed NS
+      "seed_domains": {"autoscout24.de", ...},
+      "seed_soa_rnames": {"hostmaster.autoscout24.com", ...},
+      "seed_asns": {"AS1234"},
+      "is_ownership": false,   # True for 'owned by X' scopes (needs owner-name proof)
+    }
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+# Nameserver / registrar roots that host millions of unrelated domains: a match
+# here is NOT evidence of shared ownership. Kept lowercase, matched as a suffix.
+SHARED_NS_ROOTS = frozenset({
+    "cloudflare.com", "awsdns-01.net", "awsdns.com", "azure-dns.com", "azure-dns.net",
+    "azure-dns.org", "azure-dns.info", "googledomains.com", "google.com", "domaincontrol.com",
+    "registrar-servers.com", "dnsimple.com", "name.com", "nsone.net", "ultradns.com",
+    "ultradns.net", "ultradns.org", "akam.net", "akamai.net", "dynect.net", "nsone.info",
+    "wordpress.com", "wixdns.net", "shopify.com", "squarespace.com", "gandi.net",
+    "ovh.net", "ovh.com", "hover.com", "ns.cloudflare.com", "digitalocean.com",
+    "linode.com", "vultr.com", "hetzner.com", "hetzner.de", "1and1.com", "ionos.com",
+})
+
+# Parked / for-sale / domain-sale nameservers and markers: a strong REJECT.
+PARKED_NS_MARKERS = frozenset({
+    "sedoparking.com", "sedo.com", "dan.com", "undeveloped.com", "afternic.com",
+    "parkingcrew.net", "parkingcrew.com", "bodis.com", "above.com", "voodoo.com",
+    "fabulous.com", "hugedomains.com", "namebright.com", "parklogic.com", "parkple.com",
+    "cashparking.com", "domainsponsor.com", "smartname.com", "ztomy.com", "uniregistry.com",
+    "dsredirection.com", "name-services.com", "parking.godaddy.com",
+})
+
+# Mass hosting / CDN ASNs where a shared IP means nothing about ownership.
+SHARED_ASN_NAMES = ("cloudflare", "amazon", "aws", "google", "microsoft", "azure", "akamai",
+                    "fastly", "cloudfront", "digitalocean", "linode", "ovh", "hetzner",
+                    "vultr", "godaddy", "wix", "shopify", "squarespace", "automattic",
+                    "incapsula", "imperva", "sucuri", "stackpath", "edgecast", "limelight")
+
+STRONG, MEDIUM, REJECT = "strong", "medium", "reject"
+AUTO, REVIEW, DECLINE = "auto", "review", "reject"
+
+
+@dataclass
+class Signal:
+    name: str
+    strength: str   # STRONG | MEDIUM | REJECT
+    detail: str
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "strength": self.strength, "detail": self.detail}
+
+
+@dataclass
+class Verdict:
+    tier: str                       # AUTO | REVIEW | DECLINE
+    signals: list[Signal] = field(default_factory=list)
+    reason: str = ""
+
+    def to_dict(self) -> dict:
+        return {"tier": self.tier, "reason": self.reason,
+                "signals": [s.to_dict() for s in self.signals]}
+
+
+def _registrable_root(host: str) -> str:
+    """Cheap eTLD+1 good enough for grouping NS by owner. Handles the common
+    two-level public suffixes (co.uk, com.tr, com.br, com.au, ...)."""
+    host = (host or "").strip().lower().rstrip(".")
+    labels = host.split(".")
+    if len(labels) <= 2:
+        return host
+    two_level = {"co", "com", "org", "net", "gov", "edu", "ac", "or", "ne", "go"}
+    if labels[-2] in two_level and len(labels[-1]) <= 3:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def _org_matches(org: str, legal_names: set[str], brand: str) -> bool:
+    """True if a cert/RDAP org string clearly names the owner. Matches on the
+    brand token or on a legal name (normalised, ignoring GmbH/AG/Inc/Ltd)."""
+    if not org:
+        return False
+    o = _norm(org)
+    if not o:
+        return False
+    for name in legal_names:
+        n = _norm(name)
+        # strip common company suffixes from both before compare
+        for suffix in ("gmbh", "ag", "inc", "ltd", "llc", "limited", "sa", "se", "bv", "co", "corp", "group", "holding"):
+            n = n[:-len(suffix)] if n.endswith(suffix) and len(n) > len(suffix) + 2 else n
+        if n and (n in o or o in n):
+            return True
+    b = _norm(brand)
+    return bool(b) and len(b) >= 4 and b in o
+
+
+def _ns_is_shared(ns: str) -> bool:
+    root = _registrable_root(ns)
+    return any(root == r or root.endswith("." + r) or ns.endswith("." + r) for r in SHARED_NS_ROOTS)
+
+
+def _ns_is_parked(nameservers) -> bool:
+    for ns in nameservers or ():
+        ns = (ns or "").lower()
+        if any(m in ns for m in PARKED_NS_MARKERS):
+            return True
+    return False
+
+
+def gather_signals(candidate: str, ev: dict, owner: dict) -> list[Signal]:
+    """Turn raw evidence into named, strength-tagged signals."""
+    sig: list[Signal] = []
+    legal = {n.lower() for n in owner.get("legal_names") or []}
+    brand = owner.get("brand") or ""
+    ns = [n.lower() for n in ev.get("nameservers") or []]
+
+    # --- REJECT signals (ownership-breaking) --------------------------------
+    if _ns_is_parked(ns):
+        sig.append(Signal("parked_ns", REJECT, "nameservers belong to a domain-parking/for-sale service"))
+    if ev.get("parked"):
+        sig.append(Signal("parked_page", REJECT, "the domain serves a parking/for-sale page"))
+    rdap_org = ev.get("rdap_org") or ""
+    if rdap_org and legal and not _org_matches(rdap_org, legal, brand):
+        # A registrant org that clearly names a DIFFERENT company is a reject,
+        # but only when we have legal names to compare against.
+        sig.append(Signal("registrant_mismatch", REJECT, f"registrant org '{rdap_org[:60]}' does not match the owner"))
+
+    # --- STRONG signals -----------------------------------------------------
+    # Shared NS with a seed domain (and not a mass host) => same DNS operator.
+    seed_ns_roots = {r.lower() for r in owner.get("seed_ns_roots") or []}
+    cand_ns_roots = {_registrable_root(n) for n in ns if not _ns_is_shared(n)}
+    shared_ns = cand_ns_roots & seed_ns_roots
+    if shared_ns:
+        sig.append(Signal("same_nameservers", STRONG,
+                           f"same authoritative DNS as a known-owned domain ({sorted(shared_ns)[0]})"))
+
+    # Cert names span the candidate AND a seed/brand domain.
+    sans = {s.lower().lstrip("*.") for s in ev.get("cert_sans") or []}
+    seed_domains = {d.lower() for d in owner.get("seed_domains") or []}
+    san_roots = {_registrable_root(s) for s in sans}
+    if san_roots & seed_domains or any(_registrable_root(s) in seed_domains for s in sans):
+        sig.append(Signal("shared_certificate", STRONG,
+                           "a TLS certificate covers both this domain and a known-owned domain"))
+    # Cert subject org names the owner.
+    if _org_matches(ev.get("cert_org") or "", legal, brand):
+        sig.append(Signal("cert_org", STRONG, f"TLS certificate issued to '{(ev.get('cert_org') or '')[:60]}'"))
+    # RDAP registrant org names the owner.
+    if _org_matches(rdap_org, legal, brand):
+        sig.append(Signal("registrant_org", STRONG, f"domain registrant is '{rdap_org[:60]}'"))
+    # Linked as a country site from a page already in scope.
+    if ev.get("linked_from_scope"):
+        sig.append(Signal("linked_from_scope", STRONG,
+                           "linked as an official country/locale site from an in-scope page"))
+
+    # --- MEDIUM signals -----------------------------------------------------
+    seed_soa = {r.lower() for r in owner.get("seed_soa_rnames") or []}
+    if ev.get("soa_rname") and ev["soa_rname"].lower() in seed_soa:
+        sig.append(Signal("same_soa_contact", MEDIUM, "same DNS zone contact (SOA) as a known-owned domain"))
+    seed_spf = {i.lower() for i in owner.get("seed_spf_includes") or []}
+    cand_spf = {i.lower() for i in ev.get("spf_includes") or []}
+    # A shared SPF include only counts if it is NOT a generic provider include.
+    generic_spf = {"_spf.google.com", "spf.protection.outlook.com", "amazonses.com",
+                   "sendgrid.net", "_spf.salesforce.com", "mailgun.org", "servers.mcsv.net"}
+    private_shared_spf = (cand_spf & seed_spf) - generic_spf
+    if private_shared_spf:
+        sig.append(Signal("shared_spf", MEDIUM, f"shares a non-generic SPF include ({sorted(private_shared_spf)[0]})"))
+    # Same ASN as a seed, only when not a shared cloud/CDN.
+    asn_name = (ev.get("asn_name") or "").lower()
+    cand_asn = ev.get("asn")
+    if cand_asn and cand_asn in (owner.get("seed_asns") or set()) \
+            and not any(w in asn_name for w in SHARED_ASN_NAMES) and not ev.get("shared_hosting_ip"):
+        sig.append(Signal("same_asn", MEDIUM, f"hosted in the same owner network ({cand_asn} {asn_name})"))
+    # The candidate's own ASN is named after the brand/owner.
+    if asn_name and (_org_matches(asn_name, legal, brand)):
+        sig.append(Signal("asn_named_owner", MEDIUM, f"hosting network is named after the owner ({asn_name})"))
+
+    return sig
+
+
+def decide(candidate: str, ev: dict, owner: dict, *, require_resolves: bool = True) -> Verdict:
+    """Score a candidate apex domain. Returns a Verdict (auto / review / reject)."""
+    signals = gather_signals(candidate, ev, owner)
+    rejects = [s for s in signals if s.strength == REJECT]
+    strong = [s for s in signals if s.strength == STRONG]
+    medium = [s for s in signals if s.strength == MEDIUM]
+
+    if rejects:
+        return Verdict(DECLINE, signals, rejects[0].detail)
+
+    # A domain that does not resolve has nothing to test; keep it out of auto
+    # (it can still be reviewed/added once it resolves on a later pass).
+    if require_resolves and ev.get("resolves") is False:
+        if strong or medium:
+            return Verdict(REVIEW, signals, "ownership evidence present but the domain does not resolve yet")
+        return Verdict(DECLINE, signals, "does not resolve and no ownership evidence")
+
+    # Auto-add: 2 strong, or 1 strong + 2 medium.
+    if len(strong) >= 2 or (len(strong) >= 1 and len(medium) >= 2):
+        return Verdict(AUTO, signals, "; ".join(s.detail for s in strong[:2] or medium[:2]))
+
+    # Some proof, but not enough to auto-add: the agent decides.
+    if strong or medium:
+        return Verdict(REVIEW, signals, "; ".join(s.detail for s in (strong + medium)[:3]))
+
+    return Verdict(DECLINE, signals, "no evidence this domain belongs to the owner")
