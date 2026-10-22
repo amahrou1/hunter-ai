@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import os
 import shlex
 import shutil
@@ -40,6 +41,7 @@ For each program:
   hunt scope <name>          what the AI read as in scope / out of scope / unclear
   hunt scope <name> check <url>      would this URL be allowed?
   hunt handle <username>     your platform username (for required headers and emails)
+  hunt rate <target> <n>     set a target's enforced request rate (e.g. the program changed its policy); live
   hunt rate-cap <n>          max requests/second this VPS will send (per-program limit still wins)
   hunt tools                 show which recon tools are installed
   hunt tools install         download the recon tools (subfinder, dnsx, httpx, ...)
@@ -366,6 +368,41 @@ def cmd_tools(args) -> int:
         _print("These did not install: " + ", ".join(missing) + ". You can try again with: hunt tools install")
         return 1
     _print("All recon tools are installed.")
+    return 0
+
+
+def cmd_rate(args) -> int:
+    """Set a target's enforced request rate (e.g. when the program updates its
+    policy mid-run). Writes effective_rps into scope.json; the running scope proxy
+    re-reads it live and rebuilds its rate limiter - no restart needed."""
+    from . import scope as sc
+    target = _load_target(args.target)
+    if not target.scope_file.exists():
+        _print(f"{target.name} has no scope yet; run intake first (hunt start {target.name}).")
+        return 1
+    scope = sc.load(target.scope_file)
+    if args.value is None:
+        _print(f"{target.name} enforced rate: {scope.rate_limit_rps:g} requests/second")
+        _print(f"Change it with: hunt rate {target.name} <number>")
+        return 0
+    try:
+        value = float(args.value)
+        if value <= 0:
+            raise ValueError
+    except ValueError:
+        _print("ERROR: give a positive number, e.g. hunt rate mercedes 100")
+        return 1
+    settings = config.load_settings()
+    cap = float(settings["scope"]["max_rps"])
+    applied = min(value, cap)
+    scope.rules["effective_rps"] = applied
+    scope.rules["policy_rps"] = value
+    scope.rules["rate_source"] = f"operator set {value:g}/s on {_dt.date.today().isoformat()}"
+    sc.save(scope, target.scope_file)
+    _print(f"{target.name} rate set to {applied:g} requests/second"
+           + (f" (capped from {value:g} by the VPS ceiling {cap:g}; raise it with hunt rate-cap)"
+              if applied < value else "") + ".")
+    _print("A running scope proxy picks this up within a few seconds; no restart needed.")
     return 0
 
 
@@ -748,6 +785,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("rate-cap")
     p.add_argument("value", nargs="?")
     p.set_defaults(func=cmd_rate_cap)
+    p = sub.add_parser("rate")
+    p.add_argument("target")
+    p.add_argument("value", nargs="?")
+    p.set_defaults(func=cmd_rate)
     p = sub.add_parser("tell")
     p.add_argument("target")
     p.add_argument("message", nargs=argparse.REMAINDER)
