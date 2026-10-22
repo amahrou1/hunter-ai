@@ -192,6 +192,7 @@ def seed_owner_context(brand: str, legal_names, seed_domains, ownership: bool = 
                 ns_roots.add(_registrable_root(ns))
     return {
         "brand": (brand or "").strip().lower(),
+        "brand_aliases": [],
         "legal_names": [n for n in (legal_names or []) if n],
         "seed_domains": seeds,
         "seed_ns_roots": ns_roots,
@@ -342,12 +343,42 @@ def gather_signals(candidate: str, ev: dict, owner: dict) -> list[Signal]:
     return sig
 
 
+def _brand_token_matches(candidate: str, owner: dict) -> bool:
+    """True if the candidate's registrable name IS the brand (or a stated
+    alias): autoscout24.hu for brand 'autoscout24', as24.tech for alias 'as24'.
+    A different marketplace brand (autotrader.ca) does NOT match, even if the
+    same company owns it."""
+    root = _registrable_root(candidate)
+    label = root.split(".")[0]                 # the registrable name without the TLD
+    brand = _norm(owner.get("brand") or "")
+    aliases = {_norm(a) for a in owner.get("brand_aliases") or []}
+    cand = _norm(label)
+    if not cand:
+        return False
+    names = {b for b in ({brand} | aliases) if b}
+    # The candidate must BE the brand or an extension of it (autoscout24 ->
+    # autoscout24, autoscout24-media, autoscout24cars). A shorter stem that is
+    # merely a prefix of the brand (auto, autoscout) does NOT match - that would
+    # wrongly pull in unrelated brands. An exact alias always matches.
+    return any(cand == n or cand.startswith(n) for n in names)
+
+
 def decide(candidate: str, ev: dict, owner: dict, *, require_resolves: bool = True) -> Verdict:
     """Score a candidate apex domain. Returns a Verdict (auto / review / reject)."""
     signals = gather_signals(candidate, ev, owner)
     rejects = [s for s in signals if s.strength == REJECT]
     strong = [s for s in signals if s.strength == STRONG]
     medium = [s for s in signals if s.strength == MEDIUM]
+
+    # SCOPE-TYPE GATE. A brand-TLD pattern (*.autoscout24.*) authorises only the
+    # SAME brand on other TLDs - never a different marketplace brand, however
+    # strong the common-ownership evidence. Only an explicit "all assets owned
+    # by X" scope (is_ownership) admits sibling brands. This is the guard
+    # against expanding *.autoscout24.* into autotrader.ca / autotrack.nl.
+    if owner.get("brand") and not owner.get("is_ownership") and not _brand_token_matches(candidate, owner):
+        return Verdict(DECLINE, signals,
+                       f"different brand from '{owner.get('brand')}'; a brand-TLD scope covers only the same "
+                       f"brand on other TLDs, not other brands the same company may own")
 
     if rejects:
         return Verdict(DECLINE, signals, rejects[0].detail)
@@ -361,6 +392,12 @@ def decide(candidate: str, ev: dict, owner: dict, *, require_resolves: bool = Tr
 
     # Auto-add: 2 strong, or 1 strong + 2 medium.
     if len(strong) >= 2 or (len(strong) >= 1 and len(medium) >= 2):
+        # On an ownership scope, a domain that is NOT the same brand (a sibling
+        # brand owned by the parent) never auto-adds however strong the proof -
+        # "owned by the group" is a judgement call, so it goes to review.
+        if owner.get("is_ownership") and not _brand_token_matches(candidate, owner):
+            return Verdict(REVIEW, signals, "owned by the group but a different brand - needs your judgement: "
+                           + "; ".join(s.detail for s in strong[:2]))
         return Verdict(AUTO, signals, "; ".join(s.detail for s in strong[:2] or medium[:2]))
 
     # Some proof, but not enough to auto-add: the agent decides.

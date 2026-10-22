@@ -53,13 +53,15 @@ class ScopeExpandPhase(AgentPhase):
         return [
             MustStep("M1", "Review the code-swept candidates: `hk candidates` shows what the TLD sweep already "
                      "found and scored. The strong-proof ones are already added."),
-            MustStep("M2", "Find more owned domains the sweep cannot: reverse-WHOIS / SecurityTrails / crt.sh "
-                     "by the owner's legal name, country-site links (hreflang) on in-scope pages, and the "
-                     "subsidiaries/brands 01-intel noted. Propose each with `hk candidate add <domain> "
-                     "--source <how> --evidence '<json>'`.", "candidates-proposed.txt"),
+            MustStep("M2", "Find more in-scope domains the sweep cannot - but ONLY ones the program's scope "
+                     "rule covers (for a brand-TLD scope: the SAME brand on other TLDs, NOT other brands even "
+                     "under the same parent; for an ownership scope: any owned asset). Use hreflang/country "
+                     "links on in-scope pages, crt.sh, reverse-WHOIS. Propose each with `hk candidate add "
+                     "<domain> --source <how> --evidence '<json>'`.", "candidates-proposed.txt"),
             MustStep("M3", "For each REVIEW-tier candidate (`hk candidates --tier review`), decide: approve it "
-                     "with `hk candidate approve <domain> --reason '<why it is clearly the owner>'` only when "
-                     "you are sure, else leave it. Never approve something with no real ownership evidence."),
+                     "with `hk candidate approve <domain> --reason '<why it is in scope>'` only when you are "
+                     "sure it fits the scope rule, else leave it. Code refuses to approve a different-brand "
+                     "domain on a brand-TLD program, so do not try."),
         ]
 
     def task(self, ctx: Context) -> str:
@@ -75,35 +77,56 @@ class ScopeExpandPhase(AgentPhase):
         ]
         if pats:
             for p in pats:
-                lines.append(f"- brand pattern: '{p.get('raw', p['brand'])}' -> the brand "
-                             f"**{p['brand']}** on any TLD it operates on.")
+                lines.append(f"- BRAND-TLD pattern: '{p.get('raw', p['brand'])}' -> the SAME brand "
+                             f"**{p['brand']}** on OTHER TLDs. This covers {p['brand']}.de, {p['brand']}.fr, "
+                             f"{p['brand']}.hu and so on, PLUS a clear abbreviation of the same brand if the "
+                             f"company uses one (e.g. 'as24' for 'autoscout24'). It does NOT cover a DIFFERENT "
+                             f"brand, even one the same parent company owns.")
         if own:
             names = ", ".join(own.get("legal_names") or []) or own.get("owner", "")
-            lines.append(f"- ownership scope: assets owned by {own.get('owner')} "
+            lines.append(f"- OWNERSHIP scope: assets owned by {own.get('owner')} "
                          f"(legal names: {names or 'unknown'}). Seeds: "
-                         f"{', '.join(own.get('seed_domains') or []) or 'none given'}.")
+                         f"{', '.join(own.get('seed_domains') or []) or 'none given'}. Here sibling brands "
+                         f"owned by the parent ARE in scope, but code keeps them for your review, never "
+                         f"auto-added.")
+        scope_kind = "ownership" if own else "brand-TLD"
         lines += [
             "\nCODE has already run a TLD sweep (brand.<common-suffix>), scored each by passive evidence "
             "(shared nameservers, certificate org/SANs, registrant org), and AUTO-ADDED the strong-proof "
             "ones. Run `hk candidates` to see them.\n",
-            "Your job is the creative discovery code cannot do:",
-            "1. Owned domains on unusual TLDs or different names: search crt.sh for the owner's legal name, "
-            "use SecurityTrails / VirusTotal / reverse-WHOIS with the keys in the environment, and read "
-            "country/locale links (hreflang, language/country switchers) on pages ALREADY in scope (fetch "
-            "those through the proxy with curl). Follow the subsidiaries and brands 01-intel recorded.",
-            "2. For every domain you find, gather what proves it belongs to the owner - its nameservers, the "
-            "organisation on its TLS certificate, its WHOIS/RDAP registrant - and propose it:\n"
+            f"THE SCOPE RULE FOR THIS PROGRAM ({scope_kind}):",
+        ]
+        if not own:
+            lines += [
+                "This is a BRAND-TLD scope. The ONLY domains you may propose or approve are the SAME brand "
+                f"('{pats[0]['brand'] if pats else ''}') on other TLDs, and a clear abbreviation of it. A "
+                "different marketplace/product brand is OUT OF SCOPE even if crt.sh/WHOIS proves the same "
+                "parent company (e.g. 'Autonex Gruppe') owns both - common ownership is NOT scope here. Code "
+                "will reject a different-brand domain; do not waste turns on them.",
+                "So: find the same brand's country sites (hreflang/country switcher links on in-scope pages; "
+                "crt.sh for the brand name; the brand on TLDs the sweep did not cover). Propose each with "
+                "evidence; code scores it.",
+            ]
+        else:
+            lines += [
+                "This is an OWNERSHIP scope, so assets owned by the company ARE in scope including other "
+                "brands. Find them: reverse-WHOIS / SecurityTrails by the legal name, crt.sh, brand/footer "
+                "maps, the subsidiaries 01-intel recorded. Propose each with ownership evidence. Code "
+                "auto-adds same-brand strong proof and keeps sibling brands for your review.",
+            ]
+        lines += [
+            "\nPropose a domain like this:\n"
             "   `hk candidate add <domain> --source <crt.sh|reverse-whois|hreflang|intel> "
             "--evidence '{\"nameservers\":[...],\"cert_org\":\"...\",\"rdap_org\":\"...\",\"cert_sans\":[...],"
             "\"resolves\":true,\"linked_from_scope\":true}'`\n"
-            "   CODE scores the evidence and tells you the tier (auto/review/reject). You cannot overrule it.",
-            "3. Review the REVIEW-tier candidates (`hk candidates --tier review`): approve only the ones you "
-            "are certain are the owner's, with a one-line reason; leave the rest. Never approve a domain with "
-            "no real ownership evidence - a shared Cloudflare IP or a similar name is NOT proof.",
+            "   CODE scores the evidence and the scope rule, and tells you the tier (auto/review/reject). You "
+            "cannot overrule it.",
+            "Review the REVIEW-tier candidates (`hk candidates --tier review`): approve only the ones you are "
+            "certain belong in scope under the rule above, with a one-line reason; leave the rest. Fetch "
+            "in-scope pages for hreflang links through the proxy with curl.",
             "\nParking pages, for-sale domains, and domains whose registrant is a different company are NOT in "
-            "scope - do not propose them (code rejects them anyway). When done, write ./handoff.md listing "
-            "what you added and the strongest evidence for each.",
-            "Also write ./candidates-proposed.txt with one line per domain you proposed and its decided tier.",
+            "scope. When done, write ./handoff.md listing what you added and the strongest evidence for each, "
+            "and ./candidates-proposed.txt with one line per domain you proposed and its decided tier.",
         ]
         return "\n".join(lines)
 

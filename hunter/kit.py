@@ -858,6 +858,47 @@ def cmd_candidate(kit: Kit, args) -> int:
             print(f"  {r['tier']:9} {r['domain']:40} {r['source']:14} {r['reason'] or ''}")
         return 0
 
+    if action == "recheck":
+        # Re-score every candidate under the CURRENT scope rule and drop any that
+        # no longer qualify (e.g. a sibling brand added before the brand-TLD gate
+        # existed). Then re-sync scope.json so the running proxy drops them too.
+        owner = expand.load_owner_context(kit.state.db) or _owner_context(kit)
+        settings_cfg = config.load_settings().get("scope_expand", {}) or {}
+        auto_mode = expand.auto_mode_for(settings_cfg, bool(owner.get("is_ownership")))
+        brand_gate = bool(owner.get("brand")) and not owner.get("is_ownership")
+        changed = dropped = 0
+        for r in kit.store.candidates():
+            try:
+                ev = json.loads(r["evidence"]) if r["evidence"] else {}
+            except (json.JSONDecodeError, TypeError):
+                ev = {}
+            verdict = expand.decide(r["domain"], ev, owner)
+            # Map the scoring verdict to a stored tier. A brand-mismatch on a
+            # brand-TLD scope is a hard reject (decide already returns DECLINE
+            # for it, but be explicit).
+            if brand_gate and not expand._brand_token_matches(r["domain"], owner):
+                new_tier = "reject"
+            else:
+                new_tier = expand.stored_tier(verdict.tier, auto_mode)
+            # Keep an agent decision that the recheck does not contradict: an
+            # approved same-brand domain stays approved; an agent rejection stays.
+            if r["tier"] == "approved" and new_tier in expand.ADMITTED_TIERS:
+                new_tier = "approved"
+            if r["tier"] == "rejected-by-agent":
+                continue
+            if new_tier == r["tier"]:
+                continue
+            if r["tier"] in expand.ADMITTED_TIERS and new_tier not in expand.ADMITTED_TIERS:
+                dropped += 1
+            kit.store.set_candidate_tier(r["domain"], new_tier, "code-recheck", verdict.reason)
+            changed += 1
+        kit.state.db.commit()
+        scope = kit.scope()
+        added = expand.sync_scope_expanded(kit.store, scope, kit.target.scope_file, sc.save)
+        print(f"rechecked: {changed} candidate(s) re-tiered, {dropped} dropped from scope; "
+              f"{added} now in scope")
+        return 0
+
     domain = (getattr(args, "domain", "") or "").strip().lower().rstrip(".")
     if not domain:
         print("usage: hk candidate <add|approve|reject> <domain> ...")
@@ -911,6 +952,18 @@ def cmd_candidate(kit: Kit, args) -> int:
                 print(f"cannot approve '{domain}': its evidence tier is '{row['tier']}', not 'review'. "
                       f"Code only lets you approve candidates with real but partial ownership proof.")
                 return 1
+            # Re-check the scope-type gate on approve: on a brand-TLD scope a
+            # different-brand domain can never be approved, whatever the agent
+            # believes about common ownership. Only enforced when we actually
+            # know the brand (a pattern scope); with no brand there is nothing
+            # to compare against, so the normal review guard above applies.
+            owner = expand.load_owner_context(kit.state.db) or _owner_context(kit)
+            if (owner.get("brand") and not owner.get("is_ownership")
+                    and not expand._brand_token_matches(domain, owner)):
+                print(f"cannot approve '{domain}': it is a different brand from "
+                      f"'{owner.get('brand')}'. This program's scope is the brand on its TLDs, not other "
+                      f"brands the same company owns. Only an 'all assets owned by X' program would allow it.")
+                return 1
             kit.store.set_candidate_tier(domain, "approved", "agent", args.reason or "")
             kit.state.db.commit()
             print(f"approved {domain} (will be added to scope)")
@@ -920,7 +973,8 @@ def cmd_candidate(kit: Kit, args) -> int:
             print(f"rejected {domain}")
         return 0
 
-    print("usage: hk candidate <add|approve|reject|list> ...")
+
+    print("usage: hk candidate <add|approve|reject|list|recheck> ...")
     return 1
 
 
@@ -939,6 +993,7 @@ def _owner_context(kit: Kit) -> dict:
     from .expand import _registrable_root
     return {
         "brand": brand,
+        "brand_aliases": [],
         "legal_names": own.get("legal_names") or ([] if not brand else []),
         "seed_domains": {d for d in seed_domains},
         "seed_ns_roots": set(),          # filled by the phase from live NS lookups
@@ -1011,7 +1066,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("authflows").set_defaults(func=cmd_authflows)
     sub.add_parser("graphql").set_defaults(func=cmd_graphql)
     a = sub.add_parser("candidate")
-    a.add_argument("action", choices=["add", "approve", "reject", "list"])
+    a.add_argument("action", choices=["add", "approve", "reject", "list", "recheck"])
     a.add_argument("domain", nargs="?")
     a.add_argument("--source", help="how it was found (tld-sweep, crt.sh, reverse-whois, hreflang, agent)")
     a.add_argument("--pattern", help="the brand/pattern it came from")

@@ -140,3 +140,58 @@ def test_registrable_root_two_level_suffixes():
     assert expand._registrable_root("ns1.example.co.uk") == "example.co.uk"
     assert expand._registrable_root("a.b.example.com") == "example.com"
     assert expand._registrable_root("example.de") == "example.de"
+
+
+# -------------------------------------------- scope-type gate (sibling brands)
+
+_PATTERN_OWNER = dict(OWNER)   # is_ownership False, brand autoscout24
+_STRONG = {"resolves": True, "cert_org": "AutoScout24 GmbH", "rdap_org": "AutoScout24 GmbH",
+           "nameservers": ["ns1.autoscout24.com"]}
+
+
+def test_brand_tld_scope_rejects_sibling_brand_even_with_strong_proof():
+    # autotrader.ca is owned by the same parent, proven by cert+WHOIS+NS, but a
+    # brand-TLD scope (*.autoscout24.*) does NOT cover a different brand.
+    for d in ("autotrader.ca", "autotrack.nl", "gaspedaal.nl", "autohebdo.net"):
+        v = expand.decide(d, _STRONG, _PATTERN_OWNER)
+        assert v.tier == DECLINE, (d, v.to_dict())
+        assert "different brand" in v.reason
+
+
+def test_brand_tld_scope_accepts_same_brand_other_tld():
+    for d in ("autoscout24.hu", "autoscout24.ru", "autoscout24.net", "autoscout24-media.de"):
+        v = expand.decide(d, _STRONG, _PATTERN_OWNER)
+        assert v.tier == AUTO, (d, v.to_dict())
+
+
+def test_ownership_scope_sends_sibling_brand_to_review_not_auto():
+    own = dict(_PATTERN_OWNER, is_ownership=True)
+    v = expand.decide("autotrader.ca", _STRONG, own)
+    assert v.tier == REVIEW and "different brand" in v.reason
+    # same brand still auto-adds under ownership
+    assert expand.decide("autoscout24.hu", _STRONG, own).tier == AUTO
+
+
+def test_brand_alias_is_accepted():
+    owner = dict(_PATTERN_OWNER, brand_aliases=["as24"])
+    assert expand.decide("as24.tech", _STRONG, owner).tier == AUTO
+    # without the alias, as24 is a different brand -> rejected
+    assert expand.decide("as24.tech", _STRONG, _PATTERN_OWNER).tier == DECLINE
+
+
+def test_brand_token_matcher():
+    o = {"brand": "autoscout24", "brand_aliases": []}
+    assert expand._brand_token_matches("autoscout24.hu", o)
+    assert expand._brand_token_matches("autoscout24-media.de", o)
+    assert not expand._brand_token_matches("autotrader.ca", o)
+    assert not expand._brand_token_matches("gaspedaal.nl", o)
+
+
+def test_brand_matcher_rejects_prefix_of_brand():
+    # a shorter stem that is only a prefix of the brand must NOT match
+    o = {"brand": "autoscout24", "brand_aliases": []}
+    assert not expand._brand_token_matches("auto.com", o)
+    assert not expand._brand_token_matches("autoscout.com", o)   # prefix, not the brand
+    assert not expand._brand_token_matches("scout24.de", o)
+    assert expand._brand_token_matches("autoscout24.hu", o)
+    assert expand._brand_token_matches("autoscout24cars.com", o)   # extension is fine

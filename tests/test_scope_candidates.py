@@ -202,3 +202,65 @@ def test_ownership_scope_agent_strong_is_review_by_default(env, make_target, mon
         assert kit.store.candidate("exrail-cargo.ch")["tier"] == "review"   # suggest-only for ownership
     finally:
         kit.state.close()
+
+
+def test_recheck_drops_sibling_brands_from_scope(env, make_target, monkeypatch):
+    """The AutoScout24 cleanup: candidates added before the brand gate (sibling
+    brands) are dropped by `hk candidate recheck`, scope.json re-synced."""
+    target = make_target("as24recheck")
+    target.output.mkdir(parents=True, exist_ok=True)
+    sc.save(sc.Scope(in_scope=[sc.parse_asset("*.autoscout24.de")], out_of_scope=[],
+                     rules={"scope_patterns": [{"brand": "autoscout24", "subdomains": True}]}),
+            target.scope_file)
+    kit = _kit(target, monkeypatch)
+    try:
+        from hunter import expand
+        expand.save_owner_context(kit.state.db, {
+            "brand": "autoscout24", "brand_aliases": [], "legal_names": ["AutoScout24 GmbH"],
+            "seed_domains": {"autoscout24.de"}, "seed_ns_roots": set(), "seed_soa_rnames": set(),
+            "seed_spf_includes": set(), "seed_asns": set(), "is_ownership": False})
+        # a legit same-brand domain and two wrongly-approved sibling brands
+        kit.store.record_candidate("autoscout24.hu", source="tld-sweep", tier="added",
+                                   evidence={"resolves": True, "cert_org": "AutoScout24 GmbH",
+                                             "rdap_org": "AutoScout24 GmbH"})
+        kit.store.record_candidate("autotrader.ca", source="agent", tier="approved",
+                                   evidence={"resolves": True, "cert_org": "AutoScout24 GmbH"})
+        kit.store.record_candidate("autotrack.nl", source="agent", tier="approved",
+                                   evidence={"resolves": True})
+        kit.state.db.commit()
+        expand.sync_scope_expanded(kit.store, kit.scope(), target.scope_file, sc.save)
+        assert sc.load(target.scope_file).decide("x.autotrader.ca").allowed   # bad: in scope before recheck
+
+        cmd_candidate(kit, argparse.Namespace(action="recheck", domain=None, source=None, pattern=None,
+                                              evidence=None, reason=None, apex_only=False, tier=None, json=False))
+        live = sc.load(target.scope_file)
+        assert live.decide("x.autoscout24.hu").allowed          # same brand kept
+        assert not live.decide("x.autotrader.ca").allowed       # sibling brand dropped
+        assert not live.decide("x.autotrack.nl").allowed
+        assert kit.store.candidate("autotrader.ca")["tier"] == "reject"
+    finally:
+        kit.state.close()
+
+
+def test_approve_refuses_sibling_brand_on_brand_tld_scope(env, make_target, monkeypatch):
+    target = make_target("as24approve")
+    target.output.mkdir(parents=True, exist_ok=True)
+    sc.save(sc.Scope(in_scope=[sc.parse_asset("*.autoscout24.de")], out_of_scope=[],
+                     rules={"scope_patterns": [{"brand": "autoscout24", "subdomains": True}]}),
+            target.scope_file)
+    kit = _kit(target, monkeypatch)
+    try:
+        from hunter import expand
+        expand.save_owner_context(kit.state.db, {
+            "brand": "autoscout24", "brand_aliases": [], "legal_names": [], "seed_domains": set(),
+            "seed_ns_roots": set(), "seed_soa_rnames": set(), "seed_spf_includes": set(),
+            "seed_asns": set(), "is_ownership": False})
+        kit.store.record_candidate("autotrader.ca", source="agent", tier="review", reason="same group")
+        kit.state.db.commit()
+        rc = cmd_candidate(kit, argparse.Namespace(action="approve", domain="autotrader.ca",
+                           reason="same parent company", source=None, pattern=None, evidence=None,
+                           apex_only=False, tier=None, json=False))
+        assert rc == 1                                           # refused
+        assert kit.store.candidate("autotrader.ca")["tier"] == "review"   # unchanged
+    finally:
+        kit.state.close()
