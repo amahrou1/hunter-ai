@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Entry point for the `hunt` command. Uses the private Python environment
-# that install.sh created next to the code.
+# Entry point for the `hk` toolkit (scope/inventory commands the operator runs
+# between phases). Uses the private Python environment install.sh created next
+# to the code.
 set -euo pipefail
 SOURCE="${BASH_SOURCE[0]}"
 while [ -L "$SOURCE" ]; do

@@ -105,10 +105,13 @@ if ! command -v claude >/dev/null 2>&1; then
 fi
 command -v claude >/dev/null 2>&1 || fail "Claude Code could not be installed."
 
-# --- 4. The hunt command ------------------------------------------------
+# --- 4. The hunt / hk commands ------------------------------------------
 mkdir -p "$HOME/.local/bin"
-chmod +x "$REPO_DIR/bin/hunt"
+chmod +x "$REPO_DIR/bin/hunt" "$REPO_DIR/bin/hk"
 ln -sf "$REPO_DIR/bin/hunt" "$HOME/.local/bin/hunt"
+# hk is the inventory/scope toolkit the operator uses between phases (hk scope,
+# hk candidates, hk candidate recheck, ...). It must be on PATH too.
+ln -sf "$REPO_DIR/bin/hk" "$HOME/.local/bin/hk"
 if ! grep -qs 'hunter-ai: PATH' "$HOME/.bashrc"; then
   # shellcheck disable=SC2016  # $HOME and $PATH must stay literal in .bashrc
   printf '\n# hunter-ai: PATH\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$HOME/.bashrc"

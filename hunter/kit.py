@@ -77,7 +77,19 @@ class Kit:
     def __init__(self):
         folder = os.environ.get("HUNTER_TARGET_DIR")
         if not folder:
-            raise SystemExit("hk must run inside a hunter-ai phase (HUNTER_TARGET_DIR is not set)")
+            # Run by hand from a target folder: fall back to the current
+            # directory (or its parent) if it looks like a hunter-ai target
+            # (has hunt-output/ or scope.json). Inside a phase the orchestrator
+            # always sets HUNTER_TARGET_DIR, so this only affects operator use.
+            cwd = Path.cwd()
+            for cand in (cwd, cwd.parent):
+                if (cand / "hunt-output").is_dir() or (cand / "hunt-output" / "scope.json").exists():
+                    folder = str(cand)
+                    break
+            if not folder:
+                raise SystemExit(
+                    "hk could not find a target. Run it from inside a target folder "
+                    "(one that has a hunt-output/ directory), or set HUNTER_TARGET_DIR.")
         self.target = Target(Path(folder))
         self.state = st.State(self.target.state_db)
         self.store = A.Assets(self.state.db)
