@@ -110,6 +110,17 @@ class ScopeExpandPhase(AgentPhase):
         """Resolve brand.<suffix> for each pattern, score, record candidates,
         auto-add the strong ones. Returns (candidates_recorded, auto_added)."""
         scope = ctx.scope()
+        cfg = ctx.settings.get("scope_expand", {}) if hasattr(ctx, "settings") else {}
+        auto_mode = cfg.get("auto_add", "strong")
+        # Ownership scopes ("all assets owned by X") are the riskier kind: a
+        # wrong "owned by" guess puts you out of scope. So for an ownership
+        # scope, code is suggest-only by default (the agent/operator approves),
+        # while a concrete brand-TLD pattern auto-adds strong proof. An explicit
+        # auto_add setting overrides this.
+        is_ownership = bool(scope.rules.get("ownership_scope"))
+        if "auto_add" not in cfg and is_ownership:
+            auto_mode = "none"
+        max_auto = int(cfg.get("max_auto_add", 300))
         recorded = auto = 0
         for pat in scope.scope_patterns():
             brand = pat["brand"]
@@ -125,14 +136,23 @@ class ScopeExpandPhase(AgentPhase):
                 if not ev.get("resolves"):
                     continue  # nothing live on this TLD
                 verdict = expand.decide(domain, ev, owner)
-                tier = "added" if verdict.tier == expand.AUTO else verdict.tier
+                # auto_add "none" = suggest only: a strong verdict is recorded as
+                # 'review' for the agent, nothing auto-enters scope. max_auto_add
+                # caps how many strong ones code admits on its own.
+                do_auto = (verdict.tier == expand.AUTO and auto_mode != "none" and auto < max_auto)
+                if verdict.tier == expand.AUTO and not do_auto:
+                    tier = "review"
+                elif verdict.tier == expand.AUTO:
+                    tier = "added"
+                else:
+                    tier = verdict.tier
                 store.record_candidate(
                     domain, pattern=brand, source="tld-sweep", tier=tier,
                     subdomains=bool(pat.get("subdomains", True)), evidence=ev,
                     signals=[s.to_dict() for s in verdict.signals], reason=verdict.reason,
                     decided_by="code")
                 recorded += 1
-                if verdict.tier == expand.AUTO:
+                if tier == "added":
                     auto += 1
             ctx.state.db.commit()
         return recorded, auto

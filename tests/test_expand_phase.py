@@ -15,7 +15,7 @@ from hunter import assets as A
 from hunter.phases.ai_expand import ScopeExpandPhase
 
 
-def _ctx(tmp_path, scope):
+def _ctx(tmp_path, scope, settings=None):
     out = tmp_path / "out"
     out.mkdir(parents=True, exist_ok=True)
     scope_file = out / "scope.json"
@@ -26,6 +26,7 @@ def _ctx(tmp_path, scope):
     return SimpleNamespace(
         target=SimpleNamespace(scope_file=scope_file, output=out),
         state=state, _store=store,
+        settings=settings if settings is not None else {},
         scope=lambda: sc.load(scope_file),
         assets=lambda: store,
         log=lambda m: logs.append(m),
@@ -167,3 +168,30 @@ def test_needs_rerun_true_when_admitted_not_in_scope(tmp_path):
     # once synced it is in scope, so no more rerun
     phase._sync(ctx, ctx._store)
     assert phase.needs_rerun(ctx, ctx._store) is False
+
+
+def test_auto_add_none_records_strong_as_review(tmp_path, monkeypatch):
+    """With scope_expand.auto_add='none', a strong-proof domain is recorded as
+    'review' (suggest-only) and nothing auto-enters scope - the suggest-only
+    mode for strict/ownership programs."""
+    scope = sc.Scope(in_scope=[], out_of_scope=[],
+                     rules={"scope_patterns": [{"brand": "autoscout24", "subdomains": True}]})
+    ctx = _ctx(tmp_path, scope, settings={"scope_expand": {"auto_add": "none"}})
+    phase = ScopeExpandPhase()
+    monkeypatch.setattr(expand, "seed_owner_context", lambda *a, **k: {
+        "brand": "autoscout24", "legal_names": ["AutoScout24 GmbH"],
+        "seed_domains": {"autoscout24.de"}, "seed_ns_roots": {"autoscout24.com"},
+        "seed_soa_rnames": set(), "seed_spf_includes": set(), "seed_asns": set(),
+        "is_ownership": True})
+
+    def fake_resolve(domain, **k):
+        if domain == "autoscout24.nl":
+            return {"resolves": True, "nameservers": ["ns1.autoscout24.com"],
+                    "cert_org": "AutoScout24 GmbH"}   # strong
+        return {"resolves": False}
+    monkeypatch.setattr(expand, "resolve_evidence", fake_resolve)
+
+    recorded, auto = phase._code_sweep(ctx, ctx._store)
+    assert auto == 0                                   # nothing auto-added
+    assert ctx._store.candidate("autoscout24.nl")["tier"] == "review"
+    assert phase._sync(ctx, ctx._store) == 0           # scope unchanged

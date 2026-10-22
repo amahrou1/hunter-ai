@@ -109,6 +109,22 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         # When the policy only allows limited automation.
         "limited_scanning_rps": 2,
     },
+    # Scope discovery (phase 01c-expand): for *.brand.* and 'owned by X' scopes,
+    # find and prove owned domains/TLDs and add them before recon.
+    "scope_expand": {
+        "enabled": True,
+        # What CODE adds on its own: "strong" = auto-add 2-strong-proof domains;
+        # "none" = suggest only (everything waits for the agent to approve).
+        # For an ownership scope the first run is effectively review-only until
+        # the candidate list looks right; multi-TLD patterns auto-add.
+        "auto_add": "strong",
+        # Cap on how many domains code will auto-add in one run (a guard against
+        # a brand whose name collides with many unrelated owners).
+        "max_auto_add": 300,
+        # Subsidiaries/acquisitions are never auto-added, only agent-reviewed,
+        # unless the program explicitly says they are in scope.
+        "allow_subsidiaries_auto": False,
+    },
     "researcher": {
         # Platform username, used to fill placeholders such as
         # "X-Bug-Bounty: <username>" and to build platform emails.
@@ -189,6 +205,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "www.npmjs.com", "grep.app",
             "rubygems.org", "api.rubygems.org", "packagist.org", "repo.packagist.org",
             "services.nvd.nist.gov", "osv.dev", "api.osv.dev",
+            # Scope-discovery sources (phase 01c-expand): certificate logs, RDAP/
+            # WHOIS and IP-range ownership lookups, and the key-gated passive
+            # recon APIs. They describe assets; they are never targets.
+            "rdap.org", "rdap.verisign.com", "rdap.iana.org", "data.iana.org",
+            "stat.ripe.net", "rest.db.ripe.net", "whois.arin.net", "rdap.arin.net",
+            "api.securitytrails.com", "www.virustotal.com", "api.shodan.io",
+            "search.censys.io", "api.censys.io", "chaos.projectdiscovery.io",
+            "dns.bufferover.run", "tls.bufferover.run", "api.whoisxmlapi.com",
+            "reverse-whois.whoisxmlapi.com", "subdomains.whoisxmlapi.com",
         ],
     },
     # Where to find wordlists for fuzzing, searched in order. The agent picks
@@ -264,6 +289,8 @@ KEY_CATALOG: tuple[KeySpec, ...] = (
     KeySpec("VIRUSTOTAL_API_KEY", "VirusTotal API key", False, "Optional recon key"),
     KeySpec("URLSCAN_API_KEY", "urlscan.io API key", False, "Optional recon key"),
     KeySpec("CENSYS_API_KEY", "Censys API key (personal access token)", False, "Optional recon key"),
+    KeySpec("WHOISXML_API_KEY", "WhoisXML API key", False,
+            "Optional: reverse-WHOIS for 'owned by X' scope discovery (phase 01c-expand)"),
 )
 
 KEY_NAMES = {spec.name for spec in KEY_CATALOG}
