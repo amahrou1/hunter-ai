@@ -113,11 +113,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # find and prove owned domains/TLDs and add them before recon.
     "scope_expand": {
         "enabled": True,
-        # What CODE adds on its own: "strong" = auto-add 2-strong-proof domains;
-        # "none" = suggest only (everything waits for the agent to approve).
-        # For an ownership scope the first run is effectively review-only until
-        # the candidate list looks right; multi-TLD patterns auto-add.
-        "auto_add": "strong",
+        # What CODE adds on its own:
+        #   "auto"   (default) = brand-TLD patterns auto-add strong proof; an
+        #            'owned by X' scope is suggest-only (agent approves) - a wrong
+        #            ownership guess is the costly out-of-scope mistake.
+        #   "strong" = auto-add strong proof for both kinds.
+        #   "none"   = suggest only for both.
+        "auto_add": "auto",
         # Cap on how many domains code will auto-add in one run (a guard against
         # a brand whose name collides with many unrelated owners).
         "max_auto_add": 300,

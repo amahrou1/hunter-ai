@@ -122,7 +122,12 @@ def cmd_scope(kit: Kit, args) -> int:
         print(("ALLOWED" if decision.allowed else "BLOCKED") + f": {decision.reason}"
               + (f" ({decision.matched})" if decision.matched else ""))
         return 0 if decision.allowed else 1
-    data = {"in_scope": [a.raw for a in s.in_scope], "out_of_scope": [a.raw for a in s.out_of_scope],
+    data = {"in_scope": [a.raw for a in s.in_scope],
+            # Domains the discovery phase proved and added: test them like in_scope.
+            "discovered_in_scope": [a.raw for a in s.expanded],
+            # Every root to enumerate (policy wildcards + discovered ones).
+            "wildcard_roots": s.wildcard_roots(),
+            "out_of_scope": [a.raw for a in s.out_of_scope],
             "avoid (operator)": [a.raw for a in s.operator_out], "rate_per_second": s.rate_limit_rps,
             "required_headers": s.required_headers, "forbidden_actions": s.forbidden_actions,
             "excluded_vulnerabilities": s.excluded_vulnerabilities, "other_rules": s.other_rules}
@@ -866,15 +871,31 @@ def cmd_candidate(kit: Kit, args) -> int:
             except json.JSONDecodeError as exc:
                 print(f"evidence must be valid JSON: {exc}")
                 return 1
-        owner = _owner_context(kit)
+        # Same owner context the phase learned (seed nameservers etc.), else a
+        # basic one built from the scope.
+        owner = expand.load_owner_context(kit.state.db) or _owner_context(kit)
         verdict = expand.decide(domain, evidence, owner)
+        scope = kit.scope()
+        cfg = config.load_settings().get("scope_expand", {}) or {}
+        tier = expand.stored_tier(verdict.tier, expand.auto_mode_for(
+            cfg, bool(scope.rules.get("ownership_scope"))))
+        if verdict.tier == expand.DECLINE and not any(s.strength == expand.REJECT for s in verdict.signals):
+            tier = "unverified"   # no evidence either way yet - not a final rejection
+        existing = kit.store.candidate(domain)
+        if existing is not None and existing["tier"] in expand.ADMITTED_TIERS and tier not in expand.ADMITTED_TIERS \
+                and not any(s.strength == expand.REJECT for s in verdict.signals):
+            # Already admitted on stronger evidence: a later, thinner submission
+            # must not silently drop it from scope. Only real counter-evidence
+            # (parked, different registrant) or an explicit reject can.
+            print(f"{domain}: already {existing['tier']} on earlier evidence; kept ({verdict.reason})")
+            return 0
         kit.store.record_candidate(
             domain, pattern=args.pattern or (owner.get("brand") or "ownership"),
-            source=args.source or "agent", tier=verdict.tier, subdomains=not args.apex_only,
+            source=args.source or "agent", tier=tier, subdomains=not args.apex_only,
             evidence=evidence, signals=[s.to_dict() for s in verdict.signals],
             reason=verdict.reason, decided_by="code")
         kit.state.db.commit()
-        print(f"{domain}: {verdict.tier}  ({verdict.reason})")
+        print(f"{domain}: {tier}  ({verdict.reason})")
         return 0
 
     if action in ("approve", "reject"):

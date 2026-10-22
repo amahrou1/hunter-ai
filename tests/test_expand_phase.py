@@ -13,6 +13,13 @@ from hunter import scope as sc
 from hunter import state as st
 from hunter import assets as A
 from hunter.phases.ai_expand import ScopeExpandPhase
+from hunter.phases import PhaseResult
+
+
+@pytest.fixture(autouse=True)
+def _no_crtsh(monkeypatch):
+    # no network in tests: certificate-log evidence is stubbed per test
+    monkeypatch.setattr(expand, "crtsh_names", lambda d, **k: [])
 
 
 def _ctx(tmp_path, scope, settings=None):
@@ -195,3 +202,50 @@ def test_auto_add_none_records_strong_as_review(tmp_path, monkeypatch):
     assert auto == 0                                   # nothing auto-added
     assert ctx._store.candidate("autoscout24.nl")["tier"] == "review"
     assert phase._sync(ctx, ctx._store) == 0           # scope unchanged
+
+
+def _brand_ctx(tmp_path, seeds={"autoscout24.de"}):
+    scope = sc.Scope(in_scope=[sc.parse_asset("*.autoscout24.de")], out_of_scope=[],
+                     rules={"scope_patterns": [{"brand": "autoscout24", "subdomains": True}]})
+    return _ctx(tmp_path, scope)
+
+
+def _owner(monkeypatch, **extra):
+    base = {"brand": "autoscout24", "legal_names": [], "seed_domains": {"autoscout24.de"},
+            "seed_ns_roots": set(), "seed_soa_rnames": set(), "seed_spf_includes": set(),
+            "seed_asns": set(), "is_ownership": False}
+    base.update(extra)
+    monkeypatch.setattr(expand, "seed_owner_context", lambda *a, **k: dict(base))
+
+
+def test_live_domain_without_evidence_is_unverified_not_rejected(tmp_path, monkeypatch):
+    ctx = _brand_ctx(tmp_path)
+    _owner(monkeypatch)
+    monkeypatch.setattr(expand, "resolve_evidence",
+                        lambda d, **k: {"resolves": True, "nameservers": ["ns.unknown.net"]}
+                        if d == "autoscout24.be" else {"resolves": False})
+    ScopeExpandPhase()._code_sweep(ctx, ctx._store)
+    row = ctx._store.candidate("autoscout24.be")
+    assert row["tier"] == "unverified"        # for the agent to investigate, not a final no
+
+
+def test_crtsh_shared_certificate_plus_ns_auto_adds(tmp_path, monkeypatch):
+    ctx = _brand_ctx(tmp_path)
+    _owner(monkeypatch, seed_ns_roots={"as24dns.net"})
+    monkeypatch.setattr(expand, "resolve_evidence",
+                        lambda d, **k: {"resolves": True, "nameservers": ["ns1.as24dns.net"]}
+                        if d == "autoscout24.be" else {"resolves": False})
+    # the cert for autoscout24.be also names autoscout24.de (a seed): strong proof
+    monkeypatch.setattr(expand, "crtsh_names",
+                        lambda d, **k: ["autoscout24.be", "www.autoscout24.be", "www.autoscout24.de"])
+    ScopeExpandPhase()._code_sweep(ctx, ctx._store)
+    assert ctx._store.candidate("autoscout24.be")["tier"] == "added"
+
+
+def test_owner_context_is_saved_for_hk(tmp_path, monkeypatch):
+    ctx = _brand_ctx(tmp_path)
+    _owner(monkeypatch, seed_ns_roots={"as24dns.net"})
+    monkeypatch.setattr(expand, "resolve_evidence", lambda d, **k: {"resolves": False})
+    ScopeExpandPhase()._code_sweep(ctx, ctx._store)
+    loaded = expand.load_owner_context(ctx.state.db)
+    assert loaded["seed_ns_roots"] == {"as24dns.net"} and loaded["brand"] == "autoscout24"

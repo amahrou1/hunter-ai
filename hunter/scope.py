@@ -54,6 +54,7 @@ class Asset:
     scheme: str = ""          # url entries only
     wildcard_host: bool = False  # url entries like https://*.example.com/
     suffix_match: bool = False   # glued wildcard like *us.tiktokv.com: match any host ending in `host`
+    any_tld: bool = False        # exclusion like support.binance.*: `host` is the stem, any TLD after it
 
     @property
     def is_network(self) -> bool:
@@ -226,11 +227,45 @@ def parse_pattern(raw: str) -> dict | None:
     return {"brand": stem, "subdomains": subdomains, "raw": raw.strip()}
 
 
+_STEM_RE = re.compile(r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def parse_any_tld_exclusion(raw: str) -> Asset | None:
+    """An OUT-of-scope entry with a trailing TLD wildcard, e.g. `support.binance.*`
+    or `*.support.autoscout24.*`: exclude that name on every TLD. Only for
+    exclusions - matching broadly is the safe direction there. Never use this
+    for in-scope entries (that would be scope broadening). Returns None if `raw`
+    is not of this form."""
+    value = _clean(raw).lower().rstrip("/")
+    if "://" in value:
+        value = value.split("://", 1)[1].split("/", 1)[0]
+    if value.startswith("*."):
+        value = value[2:]
+    elif value.startswith("."):
+        value = value[1:]
+    if not value.endswith(".*"):
+        return None
+    stem = value[:-2]
+    if not stem or "*" in stem or not _STEM_RE.match(stem) or stem.replace(".", "").isdigit():
+        return None
+    return Asset(kind="wildcard", raw=raw.strip(), host=stem, any_tld=True)
+
+
 # --------------------------------------------------------------------------
 # Matching
 # --------------------------------------------------------------------------
 
 def _host_matches(asset: Asset, host: str) -> bool:
+    if asset.any_tld:
+        # stem "support.binance" matches support.binance.com, x.support.binance.com,
+        # support.binance.com.tr: strip a 1- or 2-label suffix and compare.
+        labels = host.split(".")
+        for k in (1, 2):
+            if len(labels) > k:
+                rest = ".".join(labels[:-k])
+                if rest == asset.host or rest.endswith("." + asset.host):
+                    return True
+        return False
     if asset.kind == "wildcard" or (asset.kind == "url" and asset.wildcard_host):
         if asset.suffix_match:   # glued wildcard *X: the domain X itself and its subdomains
             return host == asset.host or host.endswith("." + asset.host)
@@ -377,7 +412,8 @@ class Scope:
                 out.append(Asset(kind=item["kind"], raw=item["raw"], host=item.get("host", ""),
                                  path=item.get("path", ""), port=item.get("port"),
                                  scheme=item.get("scheme", ""), wildcard_host=item.get("wildcard_host", False),
-                                 suffix_match=item.get("suffix_match", False)))
+                                 suffix_match=item.get("suffix_match", False),
+                                 any_tld=item.get("any_tld", False)))
             return out
         return cls(
             in_scope=assets(data.get("in_scope")),

@@ -152,6 +152,35 @@ def _nameservers(domain: str, timeout: float) -> list[str]:
         return []
 
 
+def crtsh_names(domain: str, *, timeout: float = 25.0, cap: int = 300) -> list[str]:
+    """Every name that shares a TLS certificate with `domain`, from the public
+    certificate-transparency log (crt.sh). Passive: it queries the log, never
+    the domain. A certificate that also names a known-owned domain is strong
+    proof of the same owner. Returns [] on any error (crt.sh is often slow)."""
+    import json as _json
+    import time
+    import urllib.parse
+    import urllib.request
+    url = "https://crt.sh/?q=" + urllib.parse.quote(domain) + "&output=json"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "hunter-ai scope discovery"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:   # noqa: S310 - fixed public host
+            rows = _json.loads(resp.read().decode("utf-8", "replace") or "[]")
+    except Exception:  # noqa: BLE001
+        return []
+    finally:
+        time.sleep(1.0)   # be polite to crt.sh between sweep queries
+    names: set[str] = set()
+    for row in rows if isinstance(rows, list) else []:
+        for name in str(row.get("name_value", "")).splitlines():
+            name = name.strip().lower().lstrip("*.").rstrip(".")
+            if name and " " not in name:
+                names.add(name)
+        if len(names) >= cap:
+            break
+    return sorted(names)[:cap]
+
+
 def seed_owner_context(brand: str, legal_names, seed_domains, ownership: bool = False) -> dict:
     """Build the owner context from the seed (known-owned) domains: learn their
     nameserver roots so a candidate sharing them scores as same-owner."""
@@ -392,3 +421,52 @@ def sync_scope_expanded(store, scope, scope_file, save_fn) -> int:
         scope.expanded = wanted
         save_fn(scope, scope_file)
     return len(wanted)
+
+
+# --------------------------------------------------------------------------
+# One rule for verdict -> stored tier, shared by the code sweep and the agent
+# --------------------------------------------------------------------------
+
+def auto_mode_for(cfg: dict | None, is_ownership: bool) -> str:
+    """'strong' (code auto-adds strong proof) or 'none' (suggest only).
+    Ownership scopes default to suggest-only - a wrong 'owned by' guess is the
+    costly out-of-scope mistake - unless the operator set auto_add explicitly."""
+    mode = str((cfg or {}).get("auto_add") or "auto").lower()
+    if mode == "none":
+        return "none"
+    if mode == "strong":
+        return "strong"
+    return "none" if is_ownership else "strong"   # "auto" (default) or unknown
+
+
+def stored_tier(verdict_tier: str, auto_mode: str) -> str:
+    """Map a scoring verdict to the tier stored on the candidate. Only 'added'
+    (and the agent's 'approved') enter scope."""
+    if verdict_tier == AUTO:
+        return "review" if auto_mode == "none" else "added"
+    return verdict_tier
+
+
+OWNER_META_KEY = "expand_owner_context"
+
+
+def save_owner_context(db, owner: dict) -> None:
+    """Persist the owner context the phase learned (incl. seed nameserver
+    roots) so `hk candidate add` scores agent proposals the same way."""
+    import json as _json
+    data = {k: sorted(v) if isinstance(v, set) else v for k, v in owner.items()}
+    db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)", (OWNER_META_KEY, _json.dumps(data)))
+
+
+def load_owner_context(db) -> dict | None:
+    import json as _json
+    try:
+        row = db.execute("SELECT value FROM meta WHERE key=?", (OWNER_META_KEY,)).fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+    if not row:
+        return None
+    data = _json.loads(row[0])
+    for key in ("seed_domains", "seed_ns_roots", "seed_soa_rnames", "seed_spf_includes", "seed_asns"):
+        data[key] = set(data.get(key) or [])
+    return data

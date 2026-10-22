@@ -121,14 +121,11 @@ _SCLIENT = re.compile(r"s_client\b[^\n;|&]*-connect\s+([\w.-]+)")
 # only produces false blocks - it stopped the probe agent from recording its own
 # progress and findings and drove it into max_turns. So a command segment whose
 # program is `hk` is not host-scanned here (its other guards still apply).
-# Pure shell plumbing that makes no request is treated the same way.
-# Only `hk` (which scope-checks its own contact) and shell text/plumbing that
-# opens no socket. Deliberately NOT here: python/sqlite3/curl/wget/nc/dnsx/ffuf
-# and anything else that can make a request - those stay fully host-scanned.
-_SAFE_LEADERS = frozenset((
-    "hk", "echo", "printf", "head", "tail", "tr", "cut", "awk",
-    "jq", "wc", "sort", "uniq", "date", "true", "sleep", "comm", "paste", "column",
-))
+# Only `hk` is exempt: it scope-checks its own contact. Shell plumbing is NOT
+# exempt - `awk` can run commands via system(), and `echo host | xargs nc`
+# would hide the host in an exempt segment. Its segments are scanned as before
+# (they rarely contain a host, so this costs nothing in practice).
+_SAFE_LEADERS = frozenset(("hk",))
 _SEG_SPLIT = re.compile(r"(?:\|\||&&|\||;|\n|&(?!&))")
 _LEADER_RE = re.compile(r"^\s*(?:[A-Za-z_][\w]*=\S*\s+)*([A-Za-z0-9_./-]+)")
 
@@ -144,8 +141,7 @@ def _segment_leader(segment: str) -> str:
 
 def _host_check_segments(text: str) -> list[str]:
     """Command segments whose host tokens must be scope-checked here. A segment
-    led by `hk` (scope-checks its own contact) or by pure shell plumbing that
-    makes no network request is left out, so a hostname quoted as data in it
+    led by `hk` (scope-checks its own contact) is left out, so a hostname quoted as data in it
     cannot cause a false block."""
     out = []
     for segment in _SEG_SPLIT.split(text):
@@ -214,7 +210,7 @@ def _roots(scope: sc.Scope | None) -> set[str]:
     roots = set()
     if scope is None:
         return roots
-    for asset in (*scope.in_scope, *scope.out_of_scope, *scope.operator_out):
+    for asset in (*scope.in_scope, *scope.expanded, *scope.out_of_scope, *scope.operator_out):
         host = (asset.host or "").lower().lstrip("*.")
         if not host or asset.kind in ("ip", "cidr"):
             continue

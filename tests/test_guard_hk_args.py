@@ -81,3 +81,17 @@ def test_hk_does_not_disarm_the_other_guards(scope):
 def test_in_scope_curl_through_proxy_is_allowed(scope):
     # Contacting an in-scope host directly with curl is fine (goes via proxy).
     check_command("curl -s https://api.corpinter.net/", scope, [])
+
+
+def test_awk_system_is_not_exempt(scope):
+    # awk can run commands; it must not hide a host from the checker
+    with pytest.raises(Verdict):
+        check_command("awk 'BEGIN{system(\"curl https://evil.example.org/\")}'", scope, [])
+
+
+def test_echo_pipe_to_network_tool_is_checked(scope):
+    # the host sits in the echo segment; it must still be checked
+    with pytest.raises(Verdict):
+        check_command("echo out-of-scope.mercedes-benz.com.cn | xargs -I{} nc {} 80",
+                      sc.Scope(in_scope=[sc.parse_asset("*.mercedes-benz.com")],
+                               out_of_scope=[sc.parse_asset("*.mercedes-benz.com.cn")]), [])

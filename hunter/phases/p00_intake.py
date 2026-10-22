@@ -28,7 +28,9 @@ WATCH = ["policy.txt", "scope-overrides.txt"]
 class IntakePhase(Phase):
     id = "00-intake"
     name = "Intake: inputs, policy and scope guard"
-    version = "1.2"
+    # 1.3: brand-TLD patterns, enriched ownership, leading-dot URLs, any-TLD
+    # exclusions. Bumped so existing targets re-read their policy.
+    version = "1.3"
     build_step = 3
 
     def outputs_present(self, ctx: Context) -> bool:
@@ -55,6 +57,7 @@ class IntakePhase(Phase):
 
         build = policy.build_scope(draft, policy_text, overrides_text, ctx.settings)
         scope = build.scope
+        self._carry_over(ctx, scope, overrides_text)
         sc.save(scope, ctx.target.scope_file)
         ctx.target.scope_review.write_text(policy.render_review(scope, build, ctx.target.name), encoding="utf-8")
         ctx.log(f"scope: {len(scope.in_scope)} in, {len(scope.out_of_scope)} out, "
@@ -108,6 +111,23 @@ class IntakePhase(Phase):
         return PhaseResult(st.DONE, summary)
 
     # -------------------------------------------------------------- helpers
+    def _carry_over(self, ctx: Context, scope: sc.Scope, overrides_text: str) -> None:
+        """Keep what a fresh policy read must not wipe when intake re-runs (code
+        update, policy edit): the domains discovery already proved (01c-expand
+        re-validates them on its next sync), and a rate the operator set with
+        `hunt rate` - unless scope-overrides.txt now sets one."""
+        if not ctx.target.scope_file.exists():
+            return
+        try:
+            prev = sc.load(ctx.target.scope_file)
+        except (OSError, ValueError, KeyError):
+            return
+        scope.expanded = list(prev.expanded)
+        source = str(prev.rules.get("rate_source") or "")
+        if source.startswith("operator set") and sc.parse_override_rate(overrides_text) is None:
+            scope.rules["effective_rps"] = prev.rules.get("effective_rps")
+            scope.rules["rate_source"] = source
+
     def _snapshot(self, ctx: Context) -> None:
         snapshot = ctx.target.output / "inputs"
         snapshot.mkdir(parents=True, exist_ok=True)

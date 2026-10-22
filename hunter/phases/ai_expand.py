@@ -36,7 +36,9 @@ class ScopeExpandPhase(AgentPhase):
     name = "Scope expansion: discover and prove owned domains/TLDs"
     version = "1.0"
     build_step = 5
-    requires = ("00-intake", "01-intel")
+    # Only intake is required. It is ordered after 01-intel so it can use what
+    # intel found, but an intel failure must never block recon and the rest.
+    requires = ("00-intake",)
     role = "scanner"
     prior_scope = "hosts"
     max_turns = 80
@@ -110,42 +112,45 @@ class ScopeExpandPhase(AgentPhase):
         """Resolve brand.<suffix> for each pattern, score, record candidates,
         auto-add the strong ones. Returns (candidates_recorded, auto_added)."""
         scope = ctx.scope()
-        cfg = ctx.settings.get("scope_expand", {}) if hasattr(ctx, "settings") else {}
-        auto_mode = cfg.get("auto_add", "strong")
-        # Ownership scopes ("all assets owned by X") are the riskier kind: a
-        # wrong "owned by" guess puts you out of scope. So for an ownership
-        # scope, code is suggest-only by default (the agent/operator approves),
-        # while a concrete brand-TLD pattern auto-adds strong proof. An explicit
-        # auto_add setting overrides this.
-        is_ownership = bool(scope.rules.get("ownership_scope"))
-        if "auto_add" not in cfg and is_ownership:
-            auto_mode = "none"
+        cfg = (getattr(ctx, "settings", None) or {}).get("scope_expand", {}) or {}
+        own = scope.rules.get("ownership_scope") or {}
+        auto_mode = expand.auto_mode_for(cfg, bool(own))
         max_auto = int(cfg.get("max_auto_add", 300))
         recorded = auto = 0
-        for pat in scope.scope_patterns():
+        patterns = scope.scope_patterns()
+        if not patterns and own:
+            # Ownership-only scope: no brand to sweep, but learn the owner
+            # context from the seeds so the agent's proposals are scored well.
+            owner = expand.seed_owner_context("", own.get("legal_names") or [],
+                                              _seed_domains(scope, ""), ownership=True)
+            expand.save_owner_context(ctx.state.db, owner)
+            ctx.state.db.commit()
+        for pat in patterns:
             brand = pat["brand"]
             owner = expand.seed_owner_context(
-                brand,
-                (scope.rules.get("ownership_scope") or {}).get("legal_names") or [],
-                _seed_domains(scope, brand),
-                ownership=bool(scope.rules.get("ownership_scope")))
+                brand, own.get("legal_names") or [], _seed_domains(scope, brand), ownership=bool(own))
+            expand.save_owner_context(ctx.state.db, owner)
             for domain in expand.candidate_domains(brand):
                 if store.candidate(domain) is not None:
                     continue  # already seen (resume)
                 ev = expand.resolve_evidence(domain)
                 if not ev.get("resolves"):
                     continue  # nothing live on this TLD
+                # Certificate-log evidence (passive): names that share a cert
+                # with this domain. A cert spanning a known-owned domain is
+                # strong proof of the same owner.
+                sans = expand.crtsh_names(domain)
+                if sans:
+                    ev["cert_sans"] = sans
                 verdict = expand.decide(domain, ev, owner)
-                # auto_add "none" = suggest only: a strong verdict is recorded as
-                # 'review' for the agent, nothing auto-enters scope. max_auto_add
-                # caps how many strong ones code admits on its own.
-                do_auto = (verdict.tier == expand.AUTO and auto_mode != "none" and auto < max_auto)
-                if verdict.tier == expand.AUTO and not do_auto:
-                    tier = "review"
-                elif verdict.tier == expand.AUTO:
-                    tier = "added"
-                else:
-                    tier = verdict.tier
+                tier = expand.stored_tier(verdict.tier, auto_mode)
+                if tier == "added" and auto >= max_auto:
+                    tier = "review"   # cap: anything beyond goes to the agent
+                if verdict.tier == expand.DECLINE and not any(
+                        s.strength == expand.REJECT for s in verdict.signals):
+                    # Live, but no ownership evidence either way yet. Not a
+                    # rejection: the agent's job is to investigate these.
+                    tier = "unverified"
                 store.record_candidate(
                     domain, pattern=brand, source="tld-sweep", tier=tier,
                     subdomains=bool(pat.get("subdomains", True)), evidence=ev,
@@ -174,7 +179,7 @@ class ScopeExpandPhase(AgentPhase):
         # A re-run triggered only by new candidates from a later phase (recon/
         # jsintel) just needs the sync - the discovery agent already ran. Don't
         # spend another model call: sync and finish.
-        if self.outputs_present(ctx) and not self._sweep_pending(ctx, store):
+        if self._handoff_written(ctx) and not self._sweep_pending(ctx, store):
             added = self._sync(ctx, store)
             ctx.log(f"01c-expand re-sync: {added} domain(s) in scope after new candidates")
             return PhaseResult(st.DONE, f"{added} domain(s) added to scope by discovery")
@@ -188,13 +193,33 @@ class ScopeExpandPhase(AgentPhase):
         # Re-sync after the agent approved/added more.
         added = self._sync(ctx, store)
         if result.status == st.DONE:
-            return PhaseResult(st.DONE, f"{added} domain(s) added to scope by discovery")
-        return result
+            return result
+        # A model error or an unfinished agent must not block recon: what code
+        # proved is already in scope. Settle DONE and say what happened.
+        return PhaseResult(st.DONE, f"{added} domain(s) added to scope; discovery agent: "
+                                    f"{result.status.lower()} ({result.summary[:80]})")
+
+    def _handoff_written(self, ctx: Context) -> bool:
+        return (self._workdir(ctx) / "handoff.md").exists()
+
+    def outputs_present(self, ctx: Context) -> bool:
+        # This phase's real output is the candidates table and scope.json's
+        # `expanded` list, not a handoff file. A plain scope finishes with no
+        # handoff at all, and discovery that ran out of turns still leaves the
+        # code-swept domains in scope. Requiring a handoff here would leave
+        # 02-recon BLOCKED "waiting for 01c-expand" on every target (the same
+        # trap as the Binance probe->map stall). Discovery is enrichment:
+        # recon proceeds with whatever is in scope.
+        return True
 
     def check(self, ctx: Context, store: A.Assets) -> PhaseResult:
         added = self._sync(ctx, store)
-        if not self.outputs_present(ctx):
-            return PhaseResult(st.PARTIAL, f"discovery incomplete; {added} added so far, agent will continue")
+        if not self._handoff_written(ctx):
+            # Still DONE: only DONE is a settled status, and a PARTIAL here would
+            # block recon. The code-swept domains are already in scope; the
+            # summary says honestly that the agent's part did not finish.
+            return PhaseResult(st.DONE, f"{added} domain(s) added to scope; the discovery agent did not "
+                                        f"finish its part (recon proceeds with what is proven)")
         return PhaseResult(st.DONE, f"{added} domain(s) added to scope by discovery")
 
     def needs_rerun(self, ctx: Context, store) -> bool:

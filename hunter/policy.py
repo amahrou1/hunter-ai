@@ -218,6 +218,12 @@ def build_scope(draft: dict, policy_text: str, overrides_text: str, settings: di
         try:
             scope.out_of_scope.append(sc.parse_asset(raw, kind))
         except sc.AssetError as exc:
+            # "support.binance.*" style: exclude that name on every TLD. Without
+            # this, support.binance.com stayed in scope via *.binance.com.
+            excl = sc.parse_any_tld_exclusion(raw)
+            if excl is not None:
+                scope.out_of_scope.append(excl)
+                continue
             scope.ambiguities.append({"item": raw, "why": f"out-of-scope entry could not be read ({exc}); "
                                       "anything that looks like it will not be tested"})
             # Keep a best-effort host exclusion so traffic to it is blocked anyway.
@@ -281,6 +287,11 @@ def build_scope(draft: dict, policy_text: str, overrides_text: str, settings: di
             scope.out_of_scope.append(sc.parse_asset(raw))
             result.review.append(f"Override: '{raw}' set OUT of scope by you.")
         except sc.AssetError as exc:
+            excl = sc.parse_any_tld_exclusion(raw)
+            if excl is not None:
+                scope.out_of_scope.append(excl)
+                result.review.append(f"Override: '{raw}' set OUT of scope by you (every TLD).")
+                continue
             result.problems.append(f"scope-overrides.txt: 'out {raw}' cannot be read ({exc})")
     for raw in ins:
         try:

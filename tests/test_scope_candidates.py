@@ -103,7 +103,9 @@ def test_agent_add_is_scored_by_code(env, make_target, monkeypatch):
             evidence='{"resolves": true, "nameservers": ["ns.unknown.net"]}',
             reason=None, apex_only=False, tier=None, json=False))
         assert rc == 0
-        assert kit.store.candidate("autoscout24.evil")["tier"] == "reject"
+        # no evidence either way: 'unverified' (agent should investigate), never admitted
+        assert kit.store.candidate("autoscout24.evil")["tier"] == "unverified"
+        assert kit.store.candidate("autoscout24.evil")["tier"] not in expand.ADMITTED_TIERS
     finally:
         kit.state.close()
 
@@ -140,5 +142,63 @@ def test_agent_can_approve_a_review_candidate(env, make_target, monkeypatch):
             source=None, pattern=None, evidence=None, apex_only=False, tier=None, json=False))
         assert rc == 0
         assert kit.store.candidate("autoscout24.pl")["tier"] == "approved"
+    finally:
+        kit.state.close()
+
+
+def _add(kit, domain, evidence):
+    return cmd_candidate(kit, argparse.Namespace(
+        action="add", domain=domain, source="agent", pattern=None, evidence=evidence,
+        reason=None, apex_only=False, tier=None, json=False))
+
+
+def test_agent_strong_proof_is_admitted_and_synced(env, make_target, monkeypatch):
+    """The AI finds a domain with strong proof: it must be stored 'added' (not
+    'auto'), so the sync puts it in scope."""
+    target = make_target("as24d")
+    target.output.mkdir(parents=True, exist_ok=True)
+    scope = sc.Scope(in_scope=[sc.parse_asset("*.autoscout24.de")], out_of_scope=[],
+                     rules={"scope_patterns": [{"brand": "autoscout24", "subdomains": True}]})
+    sc.save(scope, target.scope_file)
+    kit = _kit(target, monkeypatch)
+    try:
+        ev = ('{"resolves": true, "cert_org": "AutoScout24 GmbH", '
+              '"cert_sans": ["autoscout24.ch", "www.autoscout24.de"]}')
+        assert _add(kit, "autoscout24.ch", ev) == 0
+        assert kit.store.candidate("autoscout24.ch")["tier"] == "added"
+        live = kit.scope()
+        expand.sync_scope_expanded(kit.store, live, target.scope_file, sc.save)
+        assert sc.load(target.scope_file).decide("www.autoscout24.ch").allowed
+    finally:
+        kit.state.close()
+
+
+def test_admitted_candidate_not_downgraded_by_thin_resubmission(env, make_target, monkeypatch):
+    target = make_target("as24e")
+    target.output.mkdir(parents=True, exist_ok=True)
+    sc.save(sc.Scope(in_scope=[sc.parse_asset("*.autoscout24.de")], out_of_scope=[]), target.scope_file)
+    kit = _kit(target, monkeypatch)
+    try:
+        kit.store.record_candidate("autoscout24.ch", source="tld-sweep", tier="added", reason="strong")
+        kit.state.db.commit()
+        _add(kit, "autoscout24.ch", '{"resolves": true}')          # no evidence this time
+        assert kit.store.candidate("autoscout24.ch")["tier"] == "added"
+        _add(kit, "autoscout24.ch", '{"resolves": true, "nameservers": ["ns1.sedoparking.com"]}')
+        assert kit.store.candidate("autoscout24.ch")["tier"] == "reject"   # real counter-evidence wins
+    finally:
+        kit.state.close()
+
+
+def test_ownership_scope_agent_strong_is_review_by_default(env, make_target, monkeypatch):
+    target = make_target("own1")
+    target.output.mkdir(parents=True, exist_ok=True)
+    sc.save(sc.Scope(in_scope=[sc.parse_asset("exrail.ch")], out_of_scope=[],
+                     rules={"ownership_scope": {"owner": "ExRail AG", "legal_names": ["ExRail AG"],
+                                                "seed_domains": ["exrail.ch"]}}), target.scope_file)
+    kit = _kit(target, monkeypatch)
+    try:
+        ev = '{"resolves": true, "cert_org": "ExRail AG", "rdap_org": "ExRail AG"}'
+        _add(kit, "exrail-cargo.ch", ev)
+        assert kit.store.candidate("exrail-cargo.ch")["tier"] == "review"   # suggest-only for ownership
     finally:
         kit.state.close()
