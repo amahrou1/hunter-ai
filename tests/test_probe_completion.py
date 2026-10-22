@@ -20,11 +20,13 @@ def _store(tmp_path):
     return A.Assets(db)
 
 
-def _ctx(tmp_path):
+def _ctx(tmp_path, store=None):
     output = tmp_path / "out"
-    # cluster disabled: check() skips _cluster and needs only target.output + settings
+    # cluster disabled: check() skips _cluster and needs only target.output,
+    # settings, and assets() (used by outputs_present on the covered path).
     return SimpleNamespace(target=SimpleNamespace(output=output),
-                           settings={"cluster": {"enabled": False}})
+                           settings={"cluster": {"enabled": False}},
+                           assets=lambda: store)
 
 
 def _add_resolved_probed(store, host, *, probed, with_service):
@@ -90,3 +92,31 @@ def test_handoff_present_is_done_the_normal_way(env, tmp_path):
     phase = AIProbePhase()
     res = phase.check(_ctx(tmp_path), store)
     assert res.status == st.DONE, res.summary
+
+
+def test_covered_probe_satisfies_dependents_without_handoff(env, tmp_path):
+    """The Binance regression: probe reaches ground-truth completion on a huge
+    surface without writing handoff.md. Its outputs_present() must be True so
+    the downstream dependency gate does not leave 04-map BLOCKED 'waiting for
+    03-probe' while 03-probe is DONE."""
+    store = _store(tmp_path)
+    for i in range(500):
+        _add_resolved_probed(store, f"h{i}.api.acme.test", probed=True, with_service=True)
+    phase = AIProbePhase()
+    ctx = _ctx(tmp_path, store)
+    # no handoff.md exists
+    assert not (tmp_path / "out" / "phases" / "03-probe" / "work" / "handoff.md").exists()
+    # but the surface is covered -> dependents see the requirement as met
+    assert phase.outputs_present(ctx) is True
+
+
+def test_incomplete_probe_does_not_satisfy_dependents(env, tmp_path):
+    """A genuinely unfinished probe (no handoff, lots unprobed) must NOT look
+    present to dependents - they should wait, not run on a half-probed surface."""
+    store = _store(tmp_path)
+    for i in range(100):
+        _add_resolved_probed(store, f"done{i}.api.acme.test", probed=True, with_service=True)
+    for i in range(100):
+        _add_resolved_probed(store, f"todo{i}.api.acme.test", probed=False, with_service=False)
+    phase = AIProbePhase()
+    assert phase.outputs_present(_ctx(tmp_path, store)) is False

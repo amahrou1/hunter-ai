@@ -79,21 +79,43 @@ class AIProbePhase(AgentPhase):
             "is empty and baselines are built. Summarise the live services in ./handoff.md."
         )
 
+    def _covered(self, store: A.Assets) -> bool:
+        """True when probe's substantive work is done: essentially every
+        resolved in-scope host has been probed. The resolvable surface is
+        covered even if the agent's narrative handoff is thin or it ran out of
+        turns on bookkeeping. A tiny unprobed tail (DNS flaps, per-host
+        timeouts) does not count as unfinished."""
+        resolved = len(store.hosts(scope=A.IN, resolved=True))
+        if resolved == 0:
+            return False
+        return len(store.unprobed_hosts()) <= max(5, int(resolved * 0.005))
+
+    def outputs_present(self, ctx: Context) -> bool:
+        # Probe's "output" for a dependent phase (04-map) is a probed inventory,
+        # not the handoff file. A legitimately-covered probe satisfies its
+        # dependents even with no handoff - otherwise the downstream dependency
+        # gate (_outputs_ok -> outputs_present) leaves 04-map BLOCKED "waiting
+        # for 03-probe" while 03-probe is DONE (the Binance symptom: probe hit
+        # ground-truth completion on a 31k-service surface without writing
+        # handoff.md, and every phase after map stranded).
+        if super().outputs_present(ctx):
+            return True
+        try:
+            return self._covered(ctx.assets())
+        except Exception:  # noqa: BLE001
+            return False
+
     def check(self, ctx: Context, store: A.Assets) -> PhaseResult:
         total = store.service_count()
         if total == 0:
             return PhaseResult(st.PARTIAL, "no live web service found yet")
-        # Ground truth: probe's substantive work is "every resolved in-scope host
-        # has been probed". When essentially none are left to probe, the phase is
-        # complete even if the agent's narrative handoff is thin or it ran out of
-        # turns on bookkeeping - the resolvable surface is covered. Without this a
-        # fully-probed run can loop PARTIAL for hours, re-probing nothing (the
-        # Mercedes symptom: 4741/4743 probed, stuck PARTIAL). A tiny unprobed tail
-        # (DNS flaps, per-host timeouts) does not hold the phase open.
-        resolved = len(store.hosts(scope=A.IN, resolved=True))
+        # Ground truth: when the resolvable surface is covered, the phase is
+        # complete even without a rich handoff. Without this a fully-probed run
+        # can loop PARTIAL for hours, re-probing nothing (the Mercedes symptom:
+        # 4741/4743 probed, stuck PARTIAL).
         remaining = len(store.unprobed_hosts())
-        covered = resolved > 0 and remaining <= max(5, int(resolved * 0.005))
-        if not self.outputs_present(ctx) and not covered:
+        if not (ctx.target.output / "phases" / self.id / "work" / "handoff.md").exists() \
+                and not self._covered(store):
             return PhaseResult(st.PARTIAL, f"{total} live service(s); agent did not finish, will continue")
         parked = self._cluster(ctx, store)
         suffix = f"; collapsed {parked} infra clone(s) to representatives" if parked else ""
