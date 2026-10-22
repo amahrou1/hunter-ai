@@ -8,6 +8,3 @@ mitmproxy>=10
 # last line that ships a focal-compatible Chromium. Raise this only if the VPS OS
 # is upgraded past 20.04.
 playwright==1.48.0
-# dnspython: nameserver lookups for scope discovery (phase 01c-expand). Without
-# it the ownership check loses its "same nameservers" signal.
-dnspython>=2.4

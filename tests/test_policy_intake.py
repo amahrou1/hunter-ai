@@ -234,11 +234,9 @@ def test_ownership_scope_is_recorded_not_expanded(env):
     text = (POL / "ownership_fincorp.txt").read_text()
     build = policy.build_scope(_draft("ownership_fincorp"), text, "", _settings())
     s = build.scope
-    own = s.rules["ownership_scope"]
-    assert own["owner"] == "FinCorp Global" and own["quote_found"] is True
-    assert own["quote"] == "Any system or application owned and operated by FinCorp Global is in scope."
-    # the enriched fields exist (empty here: this fixture names no legal names/seeds)
-    assert own["legal_names"] == [] and own["seed_domains"] == [] and own["include_subsidiaries"] is False
+    assert s.rules["ownership_scope"] == {
+        "owner": "FinCorp Global", "quote_found": True,
+        "quote": "Any system or application owned and operated by FinCorp Global is in scope."}
     assert [a.raw for a in s.in_scope] == ["www.fincorp-demo.com"]   # nothing guessed
     assert not s.decide("api.fincorp-demo.com").allowed
     assert "Ownership scope: assets owned by FinCorp Global" in policy.render_review(s, build, "fincorp")

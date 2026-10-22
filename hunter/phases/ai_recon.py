@@ -20,7 +20,7 @@ class AIReconPhase(AgentPhase):
     name = "Recon: subdomains, DNS, takeover candidates"
     version = "2.0"
     build_step = 4
-    requires = ("00-intake", "01c-expand")
+    requires = ("00-intake",)
     role = "scanner"
     prior_scope = "hosts"
     max_turns = 200
@@ -44,7 +44,7 @@ class AIReconPhase(AgentPhase):
         return (
             "Map the attack surface. On a big program this is a LOT of hosts, so work RESUMABLY and make "
             "forward progress every run - do not restart from scratch each time.\n"
-            "1. `hk scope` to see the roots: enumerate EVERY entry in `wildcard_roots` (it includes the domains the discovery phase proved and added, listed under `discovered_in_scope`) plus the explicit hosts. Keep a file ./done-roots.txt "
+            "1. `hk scope` to see the wildcard roots and explicit hosts in scope. Keep a file ./done-roots.txt "
             "in this directory listing the roots you have FULLY enumerated and resolved; on every run skip any "
             "root already in it and reuse files you already produced.\n"
             "2. For each remaining wildcard root, find subdomains passively (subfinder -silent -all -d <root> "

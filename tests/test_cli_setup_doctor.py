@@ -103,9 +103,8 @@ def test_cli_run_and_status(env, make_target, capsys, monkeypatch):
     assert "00-intake" in out and "phases finished" in out
     assert cli.main(["status"]) == 0
     from hunter.phases import all_phases
-    # intake + 01c-expand (instant DONE on a plain scope) settle; the fake agent
-    # leaves the AI phases unfinished. Recon is NOT blocked by intel/expand.
-    assert f"2/{len(all_phases())} phases finished" in capsys.readouterr().out
+    # intake settles DONE; the fake agent leaves the AI phases unfinished.
+    assert f"1/{len(all_phases())} phases finished" in capsys.readouterr().out
     assert cli.main(["scope", "acme", "check", "https://app.acme-test.com/x"]) == 0
     assert "ALLOWED" in capsys.readouterr().out
     assert cli.main(["scope", "acme", "check", "https://status.acme-test.io/"]) == 3

@@ -28,8 +28,8 @@ WATCH = ["policy.txt", "scope-overrides.txt"]
 class IntakePhase(Phase):
     id = "00-intake"
     name = "Intake: inputs, policy and scope guard"
-    # 1.3: brand-TLD patterns, enriched ownership, leading-dot URLs, any-TLD
-    # exclusions. Bumped so existing targets re-read their policy.
+    # 1.3: leading-dot URLs, any-TLD exclusions (support.x.*), infix label
+    # wildcards (*dev*.x.com). Bumped so existing targets re-read their policy.
     version = "1.3"
     build_step = 3
 
@@ -112,17 +112,15 @@ class IntakePhase(Phase):
 
     # -------------------------------------------------------------- helpers
     def _carry_over(self, ctx: Context, scope: sc.Scope, overrides_text: str) -> None:
-        """Keep what a fresh policy read must not wipe when intake re-runs (code
-        update, policy edit): the domains discovery already proved (01c-expand
-        re-validates them on its next sync), and a rate the operator set with
-        `hunt rate` - unless scope-overrides.txt now sets one."""
+        """Keep what a fresh policy read must not wipe when intake re-runs (a code
+        update or a policy edit): a rate the operator set with `hunt rate`,
+        unless scope-overrides.txt now sets one."""
         if not ctx.target.scope_file.exists():
             return
         try:
             prev = sc.load(ctx.target.scope_file)
         except (OSError, ValueError, KeyError):
             return
-        scope.expanded = list(prev.expanded)
         source = str(prev.rules.get("rate_source") or "")
         if source.startswith("operator set") and sc.parse_override_rate(overrides_text) is None:
             scope.rules["effective_rps"] = prev.rules.get("effective_rps")

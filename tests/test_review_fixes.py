@@ -1,5 +1,6 @@
-"""Fixes from the full review of v0.30-v0.32: intake carry-over (discovered
-domains + operator rate survive a policy re-read) and any-TLD exclusions."""
+"""Kept fixes from this session that are NOT part of scope discovery: intake
+carries over an operator-set rate across a policy re-read, and any-TLD
+exclusions (support.binance.*) are enforced."""
 
 from __future__ import annotations
 
@@ -15,18 +16,16 @@ def _settings():
     return s
 
 
-def test_intake_rerun_keeps_discovered_domains_and_operator_rate(tmp_path):
+def test_intake_rerun_keeps_operator_rate(tmp_path):
     scope_file = tmp_path / "scope.json"
     prev = sc.Scope(in_scope=[sc.parse_asset("*.binance.com")],
                     rules={"effective_rps": 200.0, "rate_source": "operator set 200/s on 2026-10-22"})
-    prev.expanded = [sc.parse_asset("*.binance.tr")]
     sc.save(prev, scope_file)
     fresh = sc.Scope(in_scope=[sc.parse_asset("*.binance.com")],
                      rules={"effective_rps": 5.0, "rate_source": "no rate stated, default used"})
     ctx = SimpleNamespace(target=SimpleNamespace(scope_file=scope_file))
     IntakePhase()._carry_over(ctx, fresh, "")
     assert fresh.rules["effective_rps"] == 200.0
-    assert [a.raw for a in fresh.expanded] == ["*.binance.tr"]
 
 
 def test_override_rate_beats_carried_operator_rate(tmp_path):
@@ -58,18 +57,6 @@ def test_any_tld_exclusion_survives_save_load(tmp_path):
 
 
 def test_any_tld_exclusion_never_broadens_in_scope():
-    # parse_asset still rejects the form, so it can never become an in-scope asset
     import pytest
     with pytest.raises(sc.AssetError):
         sc.parse_asset("support.binance.*")
-
-
-def test_auto_mode_defaults_from_real_settings():
-    """Uses the REAL default settings (the earlier test used a bare dict and so
-    missed that the default auto_add value overrode the ownership rule)."""
-    from hunter import expand
-    cfg = config.DEFAULT_SETTINGS["scope_expand"]
-    assert expand.auto_mode_for(cfg, is_ownership=False) == "strong"
-    assert expand.auto_mode_for(cfg, is_ownership=True) == "none"
-    assert expand.auto_mode_for({"auto_add": "strong"}, is_ownership=True) == "strong"
-    assert expand.auto_mode_for({"auto_add": "none"}, is_ownership=False) == "none"

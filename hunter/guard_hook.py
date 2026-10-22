@@ -43,13 +43,6 @@ PASSIVE_HOSTS = (
     "registry.npmjs.org", "rubygems.org", "api.rubygems.org", "packagist.org", "repo.packagist.org",
     "nvd.nist.gov", "services.nvd.nist.gov", "cve.mitre.org", "osv.dev", "api.osv.dev",
     "cve.circl.lu", "www.exploit-db.com",
-    # Scope-discovery sources (phase 01c-expand): cert logs, RDAP/WHOIS, IP-range
-    # ownership, and key-gated passive recon. They describe assets, never targets.
-    "rdap.verisign.com", "rdap.iana.org", "data.iana.org", "stat.ripe.net", "rest.db.ripe.net",
-    "whois.arin.net", "rdap.arin.net", "api.securitytrails.com", "www.virustotal.com",
-    "api.shodan.io", "search.censys.io", "api.censys.io", "chaos.projectdiscovery.io",
-    "dns.bufferover.run", "tls.bufferover.run", "api.whoisxmlapi.com",
-    "reverse-whois.whoisxmlapi.com", "subdomains.whoisxmlapi.com",
 )
 MODEL_HOSTS = ("api.z.ai", "open.bigmodel.cn", "api.deepseek.com", "api.anthropic.com",
                "api.mail.tm", "mail.tm", "discord.com")
@@ -210,7 +203,7 @@ def _roots(scope: sc.Scope | None) -> set[str]:
     roots = set()
     if scope is None:
         return roots
-    for asset in (*scope.in_scope, *scope.expanded, *scope.out_of_scope, *scope.operator_out):
+    for asset in (*scope.in_scope, *scope.out_of_scope, *scope.operator_out):
         host = (asset.host or "").lower().lstrip("*.")
         if not host or asset.kind in ("ip", "cidr"):
             continue

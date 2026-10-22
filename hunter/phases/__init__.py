@@ -11,7 +11,6 @@ from .base import Context, Phase, PhaseResult, PlannedPhase
 from .p00_intake import IntakePhase
 from .ai_intel import IntelPhase
 from .ai_dork import GithubDorkPhase
-from .ai_expand import ScopeExpandPhase
 from .ai_recon import AIReconPhase
 from .ai_probe import AIProbePhase
 from .ai_map import AIMapPhase
@@ -37,10 +36,6 @@ def all_phases() -> list[Phase]:
         IntakePhase(),
         IntelPhase(),
         GithubDorkPhase(),
-        # Scope expansion: for *.brand.* or ownership scopes, discover and prove
-        # the owned domains/TLDs and add them before recon enumerates them. A
-        # no-op (instant DONE) on a plain, explicit scope.
-        ScopeExpandPhase(),
         AIReconPhase(),
         AIProbePhase(),
         AIMapPhase(),

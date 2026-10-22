@@ -135,9 +135,7 @@ def cmd_scope(kit: Kit, args) -> int:
               + (f" ({decision.matched})" if decision.matched else ""))
         return 0 if decision.allowed else 1
     data = {"in_scope": [a.raw for a in s.in_scope],
-            # Domains the discovery phase proved and added: test them like in_scope.
-            "discovered_in_scope": [a.raw for a in s.expanded],
-            # Every root to enumerate (policy wildcards + discovered ones).
+            # Every wildcard/label-wildcard root for recon to enumerate.
             "wildcard_roots": s.wildcard_roots(),
             "out_of_scope": [a.raw for a in s.out_of_scope],
             "avoid (operator)": [a.raw for a in s.operator_out], "rate_per_second": s.rate_limit_rps,
@@ -849,173 +847,6 @@ def cmd_note(kit: Kit, args) -> int:
     return 0
 
 
-def cmd_candidate(kit: Kit, args) -> int:
-    """Discovery candidates. The agent proposes with `add` (code scores the
-    evidence and records the tier - the agent cannot set it); the agent can
-    `approve`/`reject` a review-tier candidate with a reason. Code, not the
-    agent, decides auto-add. Admitted candidates are synced into scope by the
-    phase/orchestrator, never written to scope.json by this command."""
-    from . import expand
-    action = args.action
-
-    if action == "list":
-        rows = kit.store.candidates(tier=args.tier)
-        if args.json:
-            print(json.dumps([dict(r) for r in rows], indent=1))
-            return 0
-        if not rows:
-            print("no scope candidates recorded yet")
-            return 0
-        for r in rows:
-            print(f"  {r['tier']:9} {r['domain']:40} {r['source']:14} {r['reason'] or ''}")
-        return 0
-
-    if action == "recheck":
-        # Re-score every candidate under the CURRENT scope rule and drop any that
-        # no longer qualify (e.g. a sibling brand added before the brand-TLD gate
-        # existed). Then re-sync scope.json so the running proxy drops them too.
-        owner = expand.load_owner_context(kit.state.db) or _owner_context(kit)
-        settings_cfg = config.load_settings().get("scope_expand", {}) or {}
-        auto_mode = expand.auto_mode_for(settings_cfg, bool(owner.get("is_ownership")))
-        brand_gate = bool(owner.get("brand")) and not owner.get("is_ownership")
-        changed = dropped = 0
-        for r in kit.store.candidates():
-            try:
-                ev = json.loads(r["evidence"]) if r["evidence"] else {}
-            except (json.JSONDecodeError, TypeError):
-                ev = {}
-            verdict = expand.decide(r["domain"], ev, owner)
-            # Map the scoring verdict to a stored tier. A brand-mismatch on a
-            # brand-TLD scope is a hard reject (decide already returns DECLINE
-            # for it, but be explicit).
-            if brand_gate and not expand._brand_token_matches(r["domain"], owner):
-                new_tier = "reject"
-            else:
-                new_tier = expand.stored_tier(verdict.tier, auto_mode)
-            # Keep an agent decision that the recheck does not contradict: an
-            # approved same-brand domain stays approved; an agent rejection stays.
-            if r["tier"] == "approved" and new_tier in expand.ADMITTED_TIERS:
-                new_tier = "approved"
-            if r["tier"] == "rejected-by-agent":
-                continue
-            if new_tier == r["tier"]:
-                continue
-            if r["tier"] in expand.ADMITTED_TIERS and new_tier not in expand.ADMITTED_TIERS:
-                dropped += 1
-            kit.store.set_candidate_tier(r["domain"], new_tier, "code-recheck", verdict.reason)
-            changed += 1
-        kit.state.db.commit()
-        scope = kit.scope()
-        added = expand.sync_scope_expanded(kit.store, scope, kit.target.scope_file, sc.save)
-        print(f"rechecked: {changed} candidate(s) re-tiered, {dropped} dropped from scope; "
-              f"{added} now in scope")
-        return 0
-
-    domain = (getattr(args, "domain", "") or "").strip().lower().rstrip(".")
-    if not domain:
-        print("usage: hk candidate <add|approve|reject> <domain> ...")
-        return 1
-
-    if action == "add":
-        evidence = {}
-        if args.evidence:
-            try:
-                evidence = json.loads(args.evidence)
-            except json.JSONDecodeError as exc:
-                print(f"evidence must be valid JSON: {exc}")
-                return 1
-        # Same owner context the phase learned (seed nameservers etc.), else a
-        # basic one built from the scope.
-        owner = expand.load_owner_context(kit.state.db) or _owner_context(kit)
-        verdict = expand.decide(domain, evidence, owner)
-        scope = kit.scope()
-        cfg = config.load_settings().get("scope_expand", {}) or {}
-        tier = expand.stored_tier(verdict.tier, expand.auto_mode_for(
-            cfg, bool(scope.rules.get("ownership_scope"))))
-        if verdict.tier == expand.DECLINE and not any(s.strength == expand.REJECT for s in verdict.signals):
-            tier = "unverified"   # no evidence either way yet - not a final rejection
-        existing = kit.store.candidate(domain)
-        if existing is not None and existing["tier"] in expand.ADMITTED_TIERS and tier not in expand.ADMITTED_TIERS \
-                and not any(s.strength == expand.REJECT for s in verdict.signals):
-            # Already admitted on stronger evidence: a later, thinner submission
-            # must not silently drop it from scope. Only real counter-evidence
-            # (parked, different registrant) or an explicit reject can.
-            print(f"{domain}: already {existing['tier']} on earlier evidence; kept ({verdict.reason})")
-            return 0
-        kit.store.record_candidate(
-            domain, pattern=args.pattern or (owner.get("brand") or "ownership"),
-            source=args.source or "agent", tier=tier, subdomains=not args.apex_only,
-            evidence=evidence, signals=[s.to_dict() for s in verdict.signals],
-            reason=verdict.reason, decided_by="code")
-        kit.state.db.commit()
-        print(f"{domain}: {tier}  ({verdict.reason})")
-        return 0
-
-    if action in ("approve", "reject"):
-        row = kit.store.candidate(domain)
-        if row is None:
-            print(f"no candidate '{domain}' recorded; add it first with: hk candidate add {domain} ...")
-            return 1
-        if action == "approve":
-            # Guard: the agent may only approve a candidate that already carries
-            # at least one real ownership signal (tier review). It can never
-            # approve something code rejected or that has no evidence.
-            if row["tier"] not in ("review", "approved"):
-                print(f"cannot approve '{domain}': its evidence tier is '{row['tier']}', not 'review'. "
-                      f"Code only lets you approve candidates with real but partial ownership proof.")
-                return 1
-            # Re-check the scope-type gate on approve: on a brand-TLD scope a
-            # different-brand domain can never be approved, whatever the agent
-            # believes about common ownership. Only enforced when we actually
-            # know the brand (a pattern scope); with no brand there is nothing
-            # to compare against, so the normal review guard above applies.
-            owner = expand.load_owner_context(kit.state.db) or _owner_context(kit)
-            if (owner.get("brand") and not owner.get("is_ownership")
-                    and not expand._brand_token_matches(domain, owner)):
-                print(f"cannot approve '{domain}': it is a different brand from "
-                      f"'{owner.get('brand')}'. This program's scope is the brand on its TLDs, not other "
-                      f"brands the same company owns. Only an 'all assets owned by X' program would allow it.")
-                return 1
-            kit.store.set_candidate_tier(domain, "approved", "agent", args.reason or "")
-            kit.state.db.commit()
-            print(f"approved {domain} (will be added to scope)")
-        else:
-            kit.store.set_candidate_tier(domain, "rejected-by-agent", "agent", args.reason or "")
-            kit.state.db.commit()
-            print(f"rejected {domain}")
-        return 0
-
-
-    print("usage: hk candidate <add|approve|reject|list|recheck> ...")
-    return 1
-
-
-def _owner_context(kit: Kit) -> dict:
-    """Build the owner context the scoring engine needs, from the scope's
-    recorded patterns/ownership plus any seed hosts already in the inventory."""
-    scope = kit.scope()
-    rules = scope.rules
-    own = rules.get("ownership_scope") or {}
-    patterns = rules.get("scope_patterns") or []
-    brand = (patterns[0]["brand"] if patterns else "") or ""
-    seed_domains = set(own.get("seed_domains") or [])
-    for a in scope.in_scope:
-        if a.host and a.kind in ("domain", "wildcard"):
-            seed_domains.add(a.host)
-    from .expand import _registrable_root
-    return {
-        "brand": brand,
-        "brand_aliases": [],
-        "legal_names": own.get("legal_names") or ([] if not brand else []),
-        "seed_domains": {d for d in seed_domains},
-        "seed_ns_roots": set(),          # filled by the phase from live NS lookups
-        "seed_soa_rnames": set(),
-        "seed_spf_includes": set(),
-        "seed_asns": set(),
-        "is_ownership": bool(own),
-    }
-
-
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="hk", add_help=False)
     sub = p.add_subparsers(dest="cmd")
@@ -1077,20 +908,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("jsintel").set_defaults(func=cmd_jsintel)
     sub.add_parser("authflows").set_defaults(func=cmd_authflows)
     sub.add_parser("graphql").set_defaults(func=cmd_graphql)
-    a = sub.add_parser("candidate")
-    a.add_argument("action", choices=["add", "approve", "reject", "list", "recheck"])
-    a.add_argument("domain", nargs="?")
-    a.add_argument("--source", help="how it was found (tld-sweep, crt.sh, reverse-whois, hreflang, agent)")
-    a.add_argument("--pattern", help="the brand/pattern it came from")
-    a.add_argument("--evidence", help="JSON evidence dict for scoring")
-    a.add_argument("--reason", help="reason for approve/reject")
-    a.add_argument("--apex-only", action="store_true", help="add only the apex, not *.domain")
-    a.add_argument("--tier", help="filter for list")
-    a.add_argument("--json", action="store_true"); a.set_defaults(func=cmd_candidate)
-    a = sub.add_parser("candidates"); a.add_argument("--tier"); a.add_argument("--json", action="store_true")
-    a.set_defaults(func=lambda k, x: cmd_candidate(k, argparse.Namespace(
-        action="list", domain=None, tier=x.tier, json=x.json, source=None, pattern=None,
-        evidence=None, reason=None, apex_only=False)))
     a = sub.add_parser("finding"); a.add_argument("action", choices=["add", "set", "list", "show"])
     a.add_argument("id", nargs="?"); a.add_argument("--title"); a.add_argument("--kind")
     a.add_argument("--severity", choices=["info", "low", "medium", "high", "critical"])
