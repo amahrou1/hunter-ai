@@ -332,6 +332,13 @@ def cmd_scope(args) -> int:
         verdict = "ALLOWED" if decision.allowed else "BLOCKED"
         _print(f"{verdict}: {args.value} ({decision.reason}{': ' + decision.matched if decision.matched else ''})")
         return 0 if decision.allowed else 3
+    # Lead with the LIVE enforced rate from scope.json (the source of truth the
+    # proxy reads). The review file below is frozen at intake time, so its rate
+    # line goes stale after `hunt rate` - showing the live value first stops that
+    # from misleading the operator.
+    source = scope.rules.get("rate_source") or "intake default"
+    _print(f"Enforced rate (live): {scope.rate_limit_rps:g}/s  (source: {source})")
+    _print("")
     _print(target.scope_review.read_text(encoding="utf-8") if target.scope_review.exists() else "(no review file)")
     return 0
 

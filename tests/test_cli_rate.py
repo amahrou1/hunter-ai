@@ -61,3 +61,20 @@ def test_rate_show_without_value(env, make_target, capsys):
     _scope_file(t)
     assert cli.cmd_rate(_args("acme", None)) == 0
     assert "2" in capsys.readouterr().out
+
+
+def test_scope_shows_live_rate_not_stale_review(env, make_target, capsys):
+    """`hunt scope` must print the LIVE enforced rate from scope.json, not only
+    the frozen scope_review.md (whose rate line goes stale after `hunt rate`)."""
+    config.save_settings(config.DEFAULT_SETTINGS.copy())
+    t = make_target("acme")
+    _scope_file(t)
+    # a stale review doc still claims the old default
+    t.scope_review.parent.mkdir(parents=True, exist_ok=True)
+    t.scope_review.write_text("Request rate used: 5.0 per second (default)\n", encoding="utf-8")
+
+    cli.cmd_rate(_args("acme", "100"))
+    capsys.readouterr()
+    assert cli.main(["scope", "acme"]) == 0
+    out = capsys.readouterr().out
+    assert "Enforced rate (live): 100/s" in out   # the real value leads
