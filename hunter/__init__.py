@@ -6,4 +6,4 @@ state and completion, and the scope proxy and command checker enforce scope,
 rate and the program rules in code, so safety does not depend on the model.
 """
 
-__version__ = "0.30.3"
+__version__ = "0.31.0"

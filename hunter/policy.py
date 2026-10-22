@@ -52,7 +52,17 @@ Then write the file ./{draft_file} with exactly this structure:
   "required_headers": [{{"name": "header name", "value": "header value as written", "quote": "exact text"}}],
   "user_agent": "required User-Agent value, or null",
   "user_agent_mode": "append | exact | null",
-  "ownership_scope": {{"owner": "organisation name", "quote": "exact text"}} or null,
+  "ownership_scope": {{"owner": "organisation name",
+                      "legal_names": ["every legal/registered company name the policy gives, e.g. 'AutoScout24 GmbH', 'Schweizerische Bundesbahnen SBB'"],
+                      "seed_domains": ["any domain the policy names that is known to belong to the owner, e.g. 'autoscout24.de' - these seed the ownership search"],
+                      "include_subsidiaries": true/false (true only if the policy explicitly says subsidiaries/acquisitions are in scope),
+                      "quote": "exact text"}} or null,
+  "scope_patterns": [
+    {{"asset": "the pattern exactly as written, e.g. '*.autoscout24.*' or 'autoscout24.*'",
+      "brand": "the brand label with no TLD, e.g. 'autoscout24'",
+      "subdomains": true/false (true if the pattern starts with '*.' or '.', meaning subdomains are included),
+      "quote": "exact text"}}
+  ],
   "account_rules": {{"self_registration": "allowed | forbidden | not_mentioned",
                     "email_requirement": "for example: use your @intigriti.me address, or null",
                     "quote": "exact text or null"}},
@@ -96,9 +106,21 @@ Rules for reading:
    tag in the User-Agent; "exact" only if it says the User-Agent must be
    exactly that value; null if no User-Agent rule.
 9. ownership_scope: only when the policy defines scope by ownership instead
-   of (or besides) a list, for example "any asset owned by ACME is in scope".
-   Do NOT turn that sentence into wildcards or guess the owner's domains or
-   IP ranges: put only assets the policy names in in_scope.
+   of (or besides) a list, for example "any asset owned by ACME is in scope",
+   "all assets belonging to X", "domains and IP ranges owned by X". Fill
+   legal_names with every company name the policy gives and seed_domains with
+   any domain it names that belongs to the owner - these two seed the
+   ownership search in a later phase. Still do NOT turn the sentence into
+   wildcards or guess domains/IPs yourself: put only assets the policy names in
+   in_scope. include_subsidiaries is true ONLY if the policy explicitly says
+   subsidiaries or acquired companies are in scope.
+9b. scope_patterns: a 'brand on any TLD' form such as "*.autoscout24.*" or
+   "autoscout24.*", meaning the brand across every country TLD it operates on.
+   Record it here (brand = the label with no TLD). Do NOT also put it in
+   in_scope or ambiguities - it is a pattern for a later phase to expand into
+   real, proven country domains, not a testable asset by itself. A normal
+   single wildcard like "*.autoscout24.de" is NOT a pattern; it goes in
+   in_scope as usual.
 10. Every "quote" must be copied word for word from policy.txt.
 11. Write valid JSON only (double quotes, no comments, no trailing commas).
 
@@ -205,12 +227,32 @@ def build_scope(draft: dict, policy_text: str, overrides_text: str, settings: di
                 except sc.AssetError:
                     pass
 
+    # Brand-on-any-TLD patterns the discovery phase will expand. Collected from
+    # the dedicated scope_patterns field AND rescued from any in_scope/ambiguity
+    # entry that is actually such a pattern, keyed by brand to dedupe.
+    patterns: dict[str, dict] = {}
+
+    def add_pattern(raw: str) -> bool:
+        pat = sc.parse_pattern(raw)
+        if not pat:
+            return False
+        patterns.setdefault(pat["brand"], {"brand": pat["brand"], "subdomains": False, "raw": pat["raw"]})
+        if pat["subdomains"]:
+            patterns[pat["brand"]]["subdomains"] = True
+        return True
+
+    for item in draft.get("scope_patterns") or []:
+        if isinstance(item, dict) and item.get("asset"):
+            add_pattern(str(item["asset"]))
+
     # 2. In scope: must parse, must be named in the policy text.
     for item in draft.get("in_scope") or []:
         raw, kind = str(item.get("asset", "")).strip(), item.get("type")
         try:
             asset = sc.parse_asset(raw, kind)
         except sc.AssetError as exc:
+            if add_pattern(raw):
+                continue  # it is a brand pattern, not a failed asset
             scope.ambiguities.append({"item": raw, "why": f"could not be read ({exc}), so it is not tested"})
             continue
         if not sc.appears_in_policy(asset, policy_text):
@@ -224,6 +266,8 @@ def build_scope(draft: dict, policy_text: str, overrides_text: str, settings: di
     for amb in draft.get("ambiguities") or []:
         if isinstance(amb, dict) and amb.get("item"):
             entry = {"item": str(amb["item"]), "why": str(amb.get("why", ""))}
+            if add_pattern(entry["item"]):
+                continue  # a brand pattern the AI mislabelled as unclear
             if looks_like_asset(entry["item"]):
                 scope.ambiguities.append(entry)
             else:
@@ -358,6 +402,7 @@ def build_scope(draft: dict, policy_text: str, overrides_text: str, settings: di
         # browser-like agent; "exact" only when the policy demands the value.
         "user_agent_mode": "exact" if draft.get("user_agent_mode") == "exact" else "append",
         "ownership_scope": _ownership(draft, policy_text),
+        "scope_patterns": list(patterns.values()),
         "unresolved_headers": unresolved,
         "self_registration": accounts.get("self_registration") if accounts.get("self_registration") in REGISTRATION
         else "not_mentioned",
@@ -410,14 +455,24 @@ def render_review(scope: sc.Scope, build: BuildResult, target_name: str) -> str:
              f"- Request rate used: {rules.get('effective_rps')} per second "
              f"(policy: {rules.get('policy_rps') or 'not stated'}; source: {rules.get('rate_source', '-')})",
              f"- Required headers: {_headers_text(rules)}",
-             *([f"- Ownership scope: assets owned by {rules['ownership_scope']['owner']} "
-                f"(only listed and confirmed assets are tested)"] if rules.get("ownership_scope") else []),
+             *([f"- Ownership scope: assets owned by {rules['ownership_scope']['owner']}"
+                + (f" (legal names: {', '.join(rules['ownership_scope'].get('legal_names') or [])})"
+                   if rules['ownership_scope'].get('legal_names') else "")
+                + " - the discovery phase searches for owned assets and proves ownership before testing"]
+               if rules.get("ownership_scope") else []),
              f"- Self-registration: {rules.get('self_registration')}",
              f"- Researcher email: {rules.get('researcher_email') or rules.get('email_requirement') or 'not required'}",
              "", "## In scope (will be tested)", ""]
     lines += [f"- `{a.raw}` ({a.kind})" for a in scope.in_scope] or ["- none"]
     lines += ["", "## Out of scope (blocked)", ""]
     lines += [f"- `{a.raw}` ({a.kind})" for a in scope.out_of_scope] or ["- none"]
+    patterns = rules.get("scope_patterns") or []
+    if patterns:
+        lines += ["", "## Brand patterns to expand (discovery phase finds the real TLDs)", ""]
+        for p in patterns:
+            sub = "subdomains included" if p.get("subdomains") else "apex per TLD"
+            lines += [f"- `{p.get('raw', p['brand'] + '.*')}` -> brand **{p['brand']}** on any TLD ({sub}); "
+                      f"the run discovers which country domains exist and proves ownership before testing."]
     lines += ["", "## Unclear assets (not tested until you decide)", ""]
     lines += [f"- `{a['item']}`: {a['why']}" for a in scope.ambiguities] or ["- none"]
     if scope.questions:
@@ -437,13 +492,26 @@ def render_review(scope: sc.Scope, build: BuildResult, target_name: str) -> str:
 
 
 def _ownership(draft: dict, policy_text: str) -> dict | None:
-    """'All assets owned by X' scopes. Recorded only, never expanded: the run
-    tests what the policy names plus what the operator confirms."""
+    """'All assets owned by X' scopes. Recorded with the owner's legal names and
+    any seed domains the policy gives, so the discovery phase can search for
+    owned assets by proof. The discovery phase - not this reader - decides what
+    is actually in scope."""
     value = draft.get("ownership_scope")
     if not isinstance(value, dict) or not str(value.get("owner") or "").strip():
         return None
     quote = str(value.get("quote") or "").strip()
-    return {"owner": str(value["owner"]).strip()[:120], "quote": quote[:400],
+    legal = [str(n).strip()[:120] for n in (value.get("legal_names") or []) if str(n).strip()][:10]
+    seeds = []
+    for d in value.get("seed_domains") or []:
+        try:
+            seeds.append(sc.parse_asset(str(d)).host)
+        except sc.AssetError:
+            continue
+    return {"owner": str(value["owner"]).strip()[:120],
+            "legal_names": legal,
+            "seed_domains": sorted(set(s for s in seeds if s))[:20],
+            "include_subsidiaries": bool(value.get("include_subsidiaries")),
+            "quote": quote[:400],
             "quote_found": bool(quote) and sc.quote_in_policy(quote, policy_text)}
 
 

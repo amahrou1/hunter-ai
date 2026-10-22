@@ -189,6 +189,43 @@ def _fail(raw: str):
     raise AssetError(f"'{raw}' cannot be read")
 
 
+# A brand label: letters/digits/hyphen, at least 3 chars, not all digits
+# (so an app-store id like "311785642" is never mistaken for a brand, and a
+# one- or two-letter stem is too generic to drive TLD discovery safely).
+_BRAND_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
+
+
+def parse_pattern(raw: str) -> dict | None:
+    """Recognise a 'brand on any TLD' scope instruction and return a structured
+    pattern for the discovery phase to expand. Returns None if `raw` is not such
+    a form. A pattern NEVER matches traffic itself - only the concrete domains
+    the discovery phase proves and adds to `expanded` do. Forms handled:
+        *.autoscout24.*   -> brand autoscout24, include subdomains
+        autoscout24.*     -> brand autoscout24, apex + (discovered) per-TLD roots
+        *.autoscout24.*.* -> rejected (too open to read safely)
+    """
+    value = _clean(raw).lower().rstrip("/")
+    if not value or "://" in value:
+        return None
+    subdomains = False
+    if value.startswith("*."):
+        subdomains, value = True, value[2:]
+    elif value.startswith("."):
+        subdomains, value = True, value[1:]
+    # Must now look like  brand.*  (optionally brand.*.*, but we only accept a
+    # single trailing star to stay conservative).
+    if not value.endswith(".*"):
+        return None
+    stem = value[:-2]
+    if not stem or "*" in stem or "." in stem:
+        # stem must be a single brand label with no dots and no further stars:
+        # "autoscout24" ok; "autoscout24.co" or "a.b" are not a brand pattern.
+        return None
+    if not _BRAND_RE.match(stem) or stem.isdigit():
+        return None
+    return {"brand": stem, "subdomains": subdomains, "raw": raw.strip()}
+
+
 # --------------------------------------------------------------------------
 # Matching
 # --------------------------------------------------------------------------
@@ -241,6 +278,12 @@ class Decision:
 class Scope:
     in_scope: list[Asset] = field(default_factory=list)
     out_of_scope: list[Asset] = field(default_factory=list)
+    # Assets PROVEN in scope by the discovery phase (01c-expand): extra TLDs of
+    # a brand, owned apex domains, owned IP ranges. Kept separate from in_scope
+    # so a policy re-read never drops them and the review can show them with
+    # their evidence. decide() treats them exactly like in_scope; out-of-scope
+    # and the operator avoid list still override them.
+    expanded: list[Asset] = field(default_factory=list)
     rules: dict = field(default_factory=dict)
     program: dict = field(default_factory=dict)
     excluded_vulnerabilities: list[str] = field(default_factory=list)
@@ -267,6 +310,9 @@ class Scope:
         for asset in self.in_scope:
             if asset_matches(asset, host, path, port):
                 return Decision(True, "in scope", asset.raw)
+        for asset in self.expanded:
+            if asset_matches(asset, host, path, port):
+                return Decision(True, "in scope (discovered)", asset.raw)
         return Decision(False, "not in scope")
 
     def decide_url(self, url: str) -> Decision:
@@ -286,13 +332,18 @@ class Scope:
         for asset in (*self.operator_out, *self.out_of_scope):
             if asset.kind != "url" and asset_matches(asset, host):
                 return False
-        return any(_host_matches(a, host) for a in self.in_scope if a.is_network)
+        return any(_host_matches(a, host) for a in (*self.in_scope, *self.expanded) if a.is_network)
 
     def network_assets(self) -> list[Asset]:
-        return [a for a in self.in_scope if a.is_network]
+        return [a for a in (*self.in_scope, *self.expanded) if a.is_network]
 
     def wildcard_roots(self) -> list[str]:
-        return sorted({a.host for a in self.in_scope if a.kind == "wildcard"})
+        return sorted({a.host for a in (*self.in_scope, *self.expanded) if a.kind == "wildcard"})
+
+    def scope_patterns(self) -> list[dict]:
+        """Brand-on-any-TLD / ownership patterns recorded at intake, for the
+        discovery phase to expand. Never match traffic themselves."""
+        return list(self.rules.get("scope_patterns") or [])
 
     @property
     def rate_limit_rps(self) -> float:
@@ -308,6 +359,7 @@ class Scope:
             "program": self.program,
             "in_scope": [a.to_dict() for a in self.in_scope],
             "out_of_scope": [a.to_dict() for a in self.out_of_scope],
+            "expanded": [a.to_dict() for a in self.expanded],
             "rules": self.rules,
             "excluded_vulnerabilities": self.excluded_vulnerabilities,
             "forbidden_actions": self.forbidden_actions,
@@ -324,11 +376,13 @@ class Scope:
             for item in items or []:
                 out.append(Asset(kind=item["kind"], raw=item["raw"], host=item.get("host", ""),
                                  path=item.get("path", ""), port=item.get("port"),
-                                 scheme=item.get("scheme", ""), wildcard_host=item.get("wildcard_host", False)))
+                                 scheme=item.get("scheme", ""), wildcard_host=item.get("wildcard_host", False),
+                                 suffix_match=item.get("suffix_match", False)))
             return out
         return cls(
             in_scope=assets(data.get("in_scope")),
             out_of_scope=assets(data.get("out_of_scope")),
+            expanded=assets(data.get("expanded")),
             rules=data.get("rules") or {},
             program=data.get("program") or {},
             excluded_vulnerabilities=list(data.get("excluded_vulnerabilities") or []),
