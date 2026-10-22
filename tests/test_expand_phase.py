@@ -121,3 +121,49 @@ def test_candidate_domains_generation():
     assert "autoscout24.de" in doms and "autoscout24.com.tr" in doms and "autoscout24.co.uk" in doms
     assert expand.candidate_domains("") == []
     assert expand.candidate_domains("a.b") == []   # not a bare brand
+
+
+def test_rerun_resyncs_without_calling_agent(tmp_path, monkeypatch):
+    """A later phase proposes a new approved candidate; re-opening 01c-expand
+    must sync it into scope WITHOUT spending another model call (the agent
+    already ran: handoff.md exists and the sweep is done)."""
+    scope = sc.Scope(in_scope=[sc.parse_asset("*.autoscout24.de")], out_of_scope=[],
+                     rules={"scope_patterns": [{"brand": "autoscout24", "subdomains": True}]})
+    ctx = _ctx(tmp_path, scope)
+    phase = ScopeExpandPhase()
+    # simulate a completed first run: a tld-sweep candidate + a handoff
+    ctx._store.record_candidate("autoscout24.de", source="tld-sweep", tier="added")
+    work = tmp_path / "out" / "phases" / "01c-expand" / "work"
+    work.mkdir(parents=True)
+    (work / "handoff.md").write_text("done")
+
+    # a later phase proposes & approves a new domain
+    ctx._store.record_candidate("autoscout24.fr", source="recon", tier="approved",
+                                reason="same cert as a known host")
+
+    called = {"agent": False}
+    monkeypatch.setattr(ScopeExpandPhase, "_code_sweep",
+                        lambda self, c, s: called.__setitem__("agent", True) or (0, 0))
+    # also guard the AgentPhase.run path
+    import hunter.agent_phase as ap
+    monkeypatch.setattr(ap.AgentPhase, "run",
+                        lambda self, c: called.__setitem__("agent", True) or PhaseResult(st.DONE, "x"))
+
+    res = phase.run(ctx)
+    assert res.status == st.DONE
+    assert called["agent"] is False            # no sweep, no agent - just a sync
+    live = sc.load(ctx.target.scope_file)
+    assert live.decide("www.autoscout24.fr").allowed
+
+
+def test_needs_rerun_true_when_admitted_not_in_scope(tmp_path):
+    scope = sc.Scope(in_scope=[sc.parse_asset("*.autoscout24.de")], out_of_scope=[],
+                     rules={"scope_patterns": [{"brand": "autoscout24", "subdomains": True}]})
+    ctx = _ctx(tmp_path, scope)
+    phase = ScopeExpandPhase()
+    assert phase.needs_rerun(ctx, ctx._store) is False
+    ctx._store.record_candidate("autoscout24.nl", source="recon", tier="approved")
+    assert phase.needs_rerun(ctx, ctx._store) is True
+    # once synced it is in scope, so no more rerun
+    phase._sync(ctx, ctx._store)
+    assert phase.needs_rerun(ctx, ctx._store) is False

@@ -141,11 +141,23 @@ class ScopeExpandPhase(AgentPhase):
         scope = ctx.scope()
         return expand.sync_scope_expanded(store, scope, ctx.target.scope_file, sc.save)
 
+    def _sweep_pending(self, ctx: Context, store: A.Assets) -> bool:
+        """True on the very first run (no tld-sweep candidate recorded yet).
+        After that the sweep is done and a re-run only needs to sync."""
+        return not any(r["source"] == "tld-sweep" for r in store.candidates())
+
     # ---- run -------------------------------------------------------------
     def run(self, ctx: Context) -> PhaseResult:
         store = ctx.assets()
         if not self._active(ctx):
             return PhaseResult(st.DONE, "scope is explicit; nothing to expand")
+        # A re-run triggered only by new candidates from a later phase (recon/
+        # jsintel) just needs the sync - the discovery agent already ran. Don't
+        # spend another model call: sync and finish.
+        if self.outputs_present(ctx) and not self._sweep_pending(ctx, store):
+            added = self._sync(ctx, store)
+            ctx.log(f"01c-expand re-sync: {added} domain(s) in scope after new candidates")
+            return PhaseResult(st.DONE, f"{added} domain(s) added to scope by discovery")
         ctx.progress(f"{self.name}: TLD sweep", None, None)
         recorded, auto = self._code_sweep(ctx, store)
         added = self._sync(ctx, store)
@@ -164,6 +176,21 @@ class ScopeExpandPhase(AgentPhase):
         if not self.outputs_present(ctx):
             return PhaseResult(st.PARTIAL, f"discovery incomplete; {added} added so far, agent will continue")
         return PhaseResult(st.DONE, f"{added} domain(s) added to scope by discovery")
+
+    def needs_rerun(self, ctx: Context, store) -> bool:
+        """Re-open when a later phase (recon, jsintel) proposed new candidates
+        that are approved/added but not yet reflected in scope.expanded, so the
+        discovery sync runs again and recon re-opens for the new roots. Cheap:
+        compares admitted candidates against what is already in scope."""
+        try:
+            scope = ctx.scope()
+        except Exception:  # noqa: BLE001
+            return False
+        in_scope = {a.host for a in (*scope.in_scope, *scope.expanded) if a.host}
+        for row in store.candidates():
+            if row["tier"] in expand.ADMITTED_TIERS and row["domain"] not in in_scope:
+                return True
+        return False
 
 
 def _seed_domains(scope: sc.Scope, brand: str) -> set[str]:

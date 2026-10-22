@@ -35,6 +35,9 @@ class AIReconPhase(AgentPhase):
             MustStep("M3", "Re-check subdomain-takeover candidates with `hk takeover`."),
             MustStep("M4", "Flag wildcard-DNS roots (a random name resolves) with `hk note` and "
                      "deprioritise their echo hosts."),
+            MustStep("M5", "If the scope has IP/CIDR ranges: find the HOSTNAMES on them (reverse-DNS/PTR, "
+                     "and passive certificate data from Shodan/Censys if keys are set), so apps that only "
+                     "answer to a Host header are not missed. Import the in-scope names with `hk import dnsx`."),
         ]
 
     def task(self, ctx: Context) -> str:
@@ -56,6 +59,11 @@ class AIReconPhase(AgentPhase):
             "5. Watch for measurement problems: if a made-up random name under a root resolves, that root has "
             "wildcard DNS and most 'hosts' are echoes - note it (`hk note`) and deprioritise them "
             "(`hk priority <host> 10`). Use `hk stats` to sanity-check your numbers.\n"
+            "6. If the scope includes IP or CIDR ranges, find the HOSTNAMES that live on those IPs so apps "
+            "that only answer to a specific Host header are not missed: reverse-DNS (PTR) every in-scope "
+            "address, and if a Shodan/Censys key is set, pull the certificate/hostname data for those IPs "
+            "from there (passive, not a scan). Keep only names that are in scope and import them "
+            "(`hk import dnsx`); the vhost step in the probe phase then uses them as Host headers.\n"
             "Do NOT make HTTP requests to the hosts here (that is the next phase) and do NOT port scan.\n"
             "Write ./handoff.md ONLY when every in-scope root is in ./done-roots.txt and its hosts are "
             "resolved and classified - that marks this phase complete. If you run low on turns before then, "
