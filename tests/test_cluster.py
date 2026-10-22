@@ -108,18 +108,39 @@ def test_different_infra_never_groups_even_with_same_fingerprint():
     assert rep["auto"] == [] and rep["review"] == []
 
 
-def test_sbb_gated_403_microsites_on_shared_ip_are_a_review_group():
-    # the REAL SBB case: thousands of event microsites returning 403 (gated), no
-    # title, no server, but all on the SAME IPs under event.sbb.ch. Must be
-    # detected (shared-IP proof carries it), offered for review, not auto-parked.
-    svcs = [_svc(i, f"ev{i}sl.event.sbb.ch", status=403, title="", server="",
-                 length=None, body_hash="", favicon="") for i in range(500)]
+def test_sbb_gated_403_random_microsites_auto_park():
+    # the REAL SBB event case: hundreds of RANDOM-SLUG microsites returning 403 on
+    # shared IPs under a dedicated platform parent -> a true microsite platform,
+    # AUTO-parked even though gated (random labels, not named services).
+    svcs = [_svc(i, f"{_slug(i)}.event.sbb.ch", status=403, title="", server="",
+                 length=None, body_hash="SAME403", favicon="") for i in range(500)]
     rep = cluster.plan(svcs, apex_roots={"sbb.ch"})
-    assert rep["auto"] == []
-    assert len(rep["review"]) == 1
-    g = rep["review"][0]
-    assert g["parent"] == "event.sbb.ch" and g["infra"] == "ip"
+    assert len(rep["auto"]) == 1
+    g = rep["auto"][0]
+    assert g["parent"] == "event.sbb.ch"
     assert g["parked_count"] == 497          # keep 3 of 500
+
+
+def test_named_api_fleet_behind_shared_gate_goes_to_review_not_auto():
+    # the api/app internal fleet: DISTINCT NAMED services sharing an identical 401
+    # gate on shared IPs. Must NOT auto-park (that is real API surface where BAC
+    # bugs live) - it goes to agent review instead.
+    names = ["contact-center-waittime", "itop-sbb-acm-int", "p2p-sync",
+             "itsm-sc-order", "zvs-vb-worker-snapshot", "network-adapter-details",
+             "processmodelling-int", "sts-billing", "tmf-sync-test",
+             "smp-impersonal-users", "costcenter-information", "identity-info"]
+    svcs = [_svc(i, f"{n}.api.sbb.ch", status=401, title="",
+                 ctype="application/json", body_hash="SAME401") for i, n in enumerate(names)]
+    rep = cluster.plan(svcs, apex_roots={"sbb.ch"})
+    assert rep["auto"] == []                 # never auto-dropped
+    assert len(rep["review"]) == 1
+    assert rep["review"][0]["parent"] == "api.sbb.ch"
+
+
+def _slug(i):
+    # random-looking event codes like the real 08ce-7495 / 042324inputsl / zvdgclxe
+    import hashlib
+    return hashlib.md5(str(i).encode()).hexdigest()[:8]
 
 
 def test_identical_endpoints_exact_dup_auto_parks():

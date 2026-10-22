@@ -58,6 +58,18 @@ def _is_redirect(status) -> bool:
         return True  # unknown status -> treat as non-groupable, be safe
 
 
+def _is_2xx(status) -> bool:
+    """Only a 2xx response is safe to AUTO-park as an exact duplicate. An
+    identical NON-2xx body (401/403/503) is a shared GATE or error page, not
+    proof the apps behind it are the same - distinct internal APIs legitimately
+    return the same 401 auth-challenge. Those go to agent review instead, so a
+    real API fleet is never silently dropped."""
+    try:
+        return 200 <= int(status) < 300
+    except (TypeError, ValueError):
+        return False
+
+
 def parent_of(host: str) -> str:
     """The parent that groups a clone family: host minus its leftmost label.
     `0-11.us.api.binance.com` -> `us.api.binance.com`."""
@@ -78,6 +90,40 @@ def is_important_label(host: str) -> bool:
     protected just because it sits under dev.api."""
     label = leftmost(host)
     return any(tok in label for tok in IMPORTANT_LABEL)
+
+
+# Words that mark a meaningful SERVICE name (vs a random event/tenant slug).
+# A host whose label contains one of these is a named service, not platform noise.
+_SERVICE_WORDS = ("api", "app", "service", "svc", "adapter", "gateway", "backend",
+                  "server", "portal", "admin", "auth", "sync", "worker", "proxy",
+                  "management", "order", "billing", "inventory", "info", "ui",
+                  "cockpit", "viewer", "shell", "snapshot", "incident", "support",
+                  "contact", "center", "costcenter", "identity", "finanz", "partner")
+
+
+def is_service_name(host: str) -> bool:
+    """True when the leftmost label reads as a meaningful SERVICE name - so it
+    must NOT be auto-parked on a shared gate response (that is real API surface).
+    Conservative: anything that could be a named service returns True, so the
+    only things that fall through to 'random slug' are clearly code-like tokens."""
+    label = leftmost(host).lower()
+    if any(w in label for w in _SERVICE_WORDS):
+        return True
+    words = [w for w in label.split("-") if w]
+    # A label made of several dictionary-ish words (vowel-bearing, >=4 chars) is a
+    # named service: contact-center-waittime, ris-modelviewer, gtech-betriebscockpit.
+    wordy = [w for w in words if len(w) >= 4 and any(v in w for v in "aeiou")
+             and not all(c in "0123456789abcdef" for c in w)]
+    return len(wordy) >= 2
+
+
+def is_random_slug_group(parked: list) -> bool:
+    """A group is a random-slug microsite PLATFORM (safe to auto-park even when
+    gated) only when NONE of its parked members looks like a named service. If
+    even one member reads as a service name, treat the whole group as a service
+    fleet -> review, never auto-drop. This is the conservative direction: when in
+    doubt, do not auto-park."""
+    return not any(is_service_name(dict(r)["host"]) for r in parked)
 
 
 def _norm_title(title: str) -> str:
@@ -219,12 +265,17 @@ def plan(services: list, *, protected: set[str] | None = None,
                                 "sample_parked": [r["host"] for r in grp[:5]]})
 
     # ---- Proof C: exact duplicates (auto-park) ---------------------------
+    # AUTO-park only 2xx exact duplicates. A non-2xx identical body (shared 401
+    # auth-gate, 403, 503 "down" page) is NOT proof the apps are the same - those
+    # fall through to Proof B below and go to AGENT REVIEW, so an internal API
+    # fleet behind a shared gate is never auto-dropped (that surface is where
+    # BAC/auth-bypass bugs live).
     c_groups: dict[tuple, list] = defaultdict(list)
     for r in rows:
         if r["id"] in claimed or _is_protected(r, protected):
             continue
-        if _is_redirect(r["status"]) or not r.get("body_hash"):
-            continue  # 3xx redirects genuinely vary; need a real body to match
+        if not _is_2xx(r["status"]) or not r.get("body_hash"):
+            continue  # only 2xx auto-parks; non-2xx handled by Proof B (review)
         if _infra_key(r)[0] == "none":
             continue  # no infra proof -> do not group
         c_groups[_c_signature(r)].append(r)
@@ -289,6 +340,24 @@ def plan(services: list, *, protected: set[str] | None = None,
         parked = [r for r in grp if r["host"] not in reps]
         if not parked:
             continue
+        status_2xx = _is_2xx(sig[2])
+        # A true microsite PLATFORM is a large same-parent group whose members are
+        # RANDOM slugs (event/tenant codes). Those auto-park even when gated (403),
+        # because they are one platform minting hosts - the SBB event.sbb.ch case.
+        # A group of DISTINCT NAMED services sharing a gate (the api/app internal
+        # fleet: itop-sbb-acm, contact-center-waittime, ...) is NOT platform noise:
+        # it goes to review so real API surface behind a shared 401/503 is never
+        # auto-dropped. 2xx platform-instances also stay review (judgment).
+        random_platform = is_random_slug_group(parked)
+        if random_platform and not status_2xx:
+            claimed.update(r["id"] for r in grp)
+            ids = [r["id"] for r in parked]
+            auto_ids.extend(ids)
+            auto_groups.append({"proof": "platform-instance", "parent": parent,
+                                "size": len(grp), "kept": sorted(reps),
+                                "parked_count": len(parked), "parked_candidate_ids": ids,
+                                "sample_parked": [r["host"] for r in parked[:5]]})
+            continue
         claimed.update(r["id"] for r in grp)
         review_groups.append({
             "proof": "platform-instance", "parent": parent, "size": len(grp),
@@ -338,22 +407,22 @@ def _park_items(services: list, group: dict) -> list[dict]:
 
 
 def apply_auto(store, services: list, report: dict) -> int:
-    """Park the auto groups (wildcard-echo, exact-dup) with full records. For
-    auto groups we park exactly the service ids collected in the plan."""
+    """Park the auto groups (wildcard-echo, exact-dup, random-slug platform) with
+    full records. Each auto group carries the exact service ids the plan chose."""
     rows = {dict(r)["id"]: dict(r) for r in services}
     parked = 0
     # wildcard-echo: auto_parked_services carries the exact ids.
     echo_ids = set(report.get("auto_parked_services", []))
     items = []
     for g in report["auto"]:
-        if g["proof"] == "exact-dup":
-            # The plan already decided the exact service ids to park.
-            for sid in g.get("parked_candidate_ids", []):
-                d = rows.get(sid)
-                if d:
-                    items.append({"service_id": sid, "host": d["host"], "parent": g["parent"],
-                                  "proof": "exact-dup",
-                                  "reason": f"exact-dup clone of {g['parent']} ({g['size']} hosts)"})
+        # exact-dup and random-slug platform-instance auto groups both carry
+        # parked_candidate_ids; wildcard-echo ids are in auto_parked_services.
+        for sid in g.get("parked_candidate_ids", []):
+            d = rows.get(sid)
+            if d:
+                items.append({"service_id": sid, "host": d["host"], "parent": g["parent"],
+                              "proof": g["proof"],
+                              "reason": f"{g['proof']} clone of {g['parent']} ({g['size']} hosts)"})
     for sid in echo_ids:
         if sid in rows:
             d = rows[sid]
