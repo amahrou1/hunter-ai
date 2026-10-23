@@ -24,6 +24,10 @@ class AIInjectionPhase(AgentPhase):
 
     def must_steps(self, ctx: Context) -> list[MustStep]:
         return [
+            MustStep("M0", "List the open high-signal leads (`hk leads` - kinds parameters, 403-bypass, "
+                     "hidden-endpoint, dom-sink, graphql-op, secret-in-js, origin-ip) and account for EACH in "
+                     "./handoff.md: tested (with result) or skipped (with reason). Do not leave them unread.",
+                     "leads-addressed.md"),
             MustStep("M1", "Gather the test surface: interesting params (`hk endpoints`), the 'parameters' "
                      "and injection-candidate leads (`hk leads`), and forms."),
             MustStep("M2", "Test each for reflected/stored/DOM XSS, SQL/NoSQL, SSRF, SSTI, open redirect, "
@@ -39,6 +43,11 @@ class AIInjectionPhase(AgentPhase):
             "Test the mapped parameters and inputs for injection and client-side flaws. Use the interesting "
             "parameters from the crawl (`hk endpoints`), the parameter leads discovery recorded "
             "(`hk leads` - kinds 'parameters' and injection candidates), and any forms.\n"
+            "START by reading the open high-signal leads the earlier phases left you: `hk leads`. The kinds "
+            "that are yours to act on - parameters, 403-bypass, hidden-endpoint, dom-sink, graphql-op, "
+            "secret-in-js, origin-ip - are concrete starting points other hunters do not have. Work each one "
+            "and, in ./handoff.md, write a line per lead: tested (what you found) or skipped (why). These "
+            "leads are the highest-signal surface on the target; do not leave them untouched.\n"
             "Cover: reflected/stored/DOM XSS, SQL and NoSQL injection, SSRF, SSTI, open redirect, CRLF/"
             "header and host-header injection. Where the app has AI/LLM features, also test prompt injection, "
             "system-prompt or tool-schema leakage, and authorization on AI-backed endpoints (REST and "

@@ -26,6 +26,10 @@ class AIAuthzPhase(AgentPhase):
 
     def must_steps(self, ctx: Context) -> list[MustStep]:
         return [
+            MustStep("M0", "List the open high-signal leads (`hk leads` - kinds hidden-endpoint, "
+                     "auth-mechanism, role-string, login-weakness, origin-ip, vhost) and account for EACH in "
+                     "./handoff.md: tested or skipped-with-reason. These are your sharpest starting points.",
+                     "leads-addressed.md"),
             MustStep("M1", "Broken access control / IDOR / BOLA: do an action as the higher-priv account, "
                      "replay as the lower-priv one and with no session; a reachable object/action is a finding."),
             MustStep("M2", "Tenant isolation: can account A read/change account B's org data?"),

@@ -62,6 +62,7 @@ Built-in checks
   hk unlock <url>                  try path/header bypasses on a 401/403 (records a lead if one works)
   hk secrets <file|dir>            scan for leaked keys/tokens (reports kinds, values masked)
   hk vhost <ip-url>                find virtual hosts on an IP (Host-header fuzz, in-scope names)
+  hk origin <host>                 find the real origin IP behind a WAF/CDN (passive); records a lead
   hk login-probe <url>             try default/collected creds on a login gate (capped, not brute force);
                                    --enum for differential username enumeration
   hk creds add 'user:pass'         record a credential the run found (tried on in-scope login gates)
@@ -509,6 +510,55 @@ def cmd_vhost(kit: Kit, args) -> int:
         kit.store.add_lead("vhost", f"http://{v['host']}/", f"ai:{kit.phase}",
                            f"distinct virtual host on {ip_url} (status {v['status']})",
                            status="signature-match")
+    return 0
+
+
+def cmd_origin(kit: Kit, args) -> int:
+    """Find candidate real-origin IPs behind a WAF/CDN for an in-scope host, from
+    passive sources (certificate transparency + DNS). Confirms in-scope IPs by
+    requesting the site directly with the original Host header; records a lead for
+    a confirmed origin. Out-of-scope IPs are reported as observations only (a raw
+    IP is usually not in a domain-only scope - add it to scope-overrides.txt if
+    you confirm it is the target's)."""
+    from . import origin
+    scope = kit.scope()
+    host = args.host.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower()
+    if not scope.decide(host).allowed:
+        print(f"BLOCKED: {host} is not in scope")
+        return 1
+    opener = webprobe.opener_through(os.environ.get("HUNTER_PROXY", ""), os.environ.get("SSL_CERT_FILE"))
+    disc = origin.candidate_ips(host, opener)
+    cands = disc["candidates"]
+    if not cands:
+        print(f"{host}: no candidate origin IP found (edge: {', '.join(disc['edge_ips']) or 'unresolved'})")
+        return 0
+    print(f"{host}: edge {disc['edge_ips']}; {len(cands)} candidate origin IP(s):")
+    confirmed = 0
+    for ip, reasons in cands.items():
+        in_scope = scope.decide(ip).allowed
+        tag = "in-scope" if in_scope else "OUT-of-scope (observation only)"
+        print(f"  {ip}  [{tag}]  ({'; '.join(reasons[:2])})")
+        if not in_scope:
+            # Record as an observation lead so the operator can confirm + add it.
+            kit.store.add_lead("origin-ip-candidate", f"https://{ip}/", f"ai:{kit.phase}",
+                               f"possible real origin of {host} ({reasons[0]}); not in scope - "
+                               f"add to scope-overrides.txt to test", status="unverified")
+            continue
+        res = origin.confirm(host, ip, opener)
+        if res.get("blocked"):
+            print(f"    -> blocked by scope proxy"); continue
+        if "error" in res:
+            print(f"    -> {res['error']}"); continue
+        marker = "" if res["on_cdn"] else " (NOT behind the CDN - likely the real origin)"
+        print(f"    -> direct: status {res['status']}, len {res['len']}, server '{res['server']}'{marker}")
+        if not res["on_cdn"] and res["status"] < 500:
+            confirmed += 1
+            kit.store.add_lead("origin-ip", f"https://{ip}/", f"ai:{kit.phase}",
+                               f"real origin of {host} reachable directly (server '{res['server']}', "
+                               f"status {res['status']}) - fuzz it directly, the WAF does not cover it",
+                               status="signature-match")
+    if confirmed:
+        print(f"recorded {confirmed} confirmed origin IP(s) as leads - fuzz them directly next.")
     return 0
 
 
@@ -1007,6 +1057,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(func=cmd_secrets)
     a = sub.add_parser("vhost"); a.add_argument("ip_url"); a.add_argument("--json", action="store_true")
     a.set_defaults(func=cmd_vhost)
+    a = sub.add_parser("origin"); a.add_argument("host"); a.add_argument("--json", action="store_true")
+    a.set_defaults(func=cmd_origin)
     a = sub.add_parser("login-probe")
     a.add_argument("url")
     a.add_argument("--enum", action="store_true", help="differential username enumeration (no password guessing)")
