@@ -98,7 +98,16 @@ def priority(host: str, status: int | None, tech: list | str, focus=lambda _h: F
     return min(score, 100)
 
 
-def httpx(store: A.Assets, scope: sc.Scope, path: Path, focus=lambda _h: False) -> dict:
+def httpx(store: A.Assets, scope: sc.Scope, path: Path, focus=lambda _h: False,
+          attempted: set[str] | None = None) -> dict:
+    """Import httpx results. `attempted` is the set of hosts that were handed to
+    httpx for this run: every one is marked probed, EVEN IF IT DID NOT ANSWER, so
+    dead/filtered/timeout hosts leave the unprobed queue instead of being retried
+    forever (the Cornelsen stall: httpx emits no record for a non-responder, so
+    without this the host is never marked probed and `hk hosts --unprobed` can
+    never reach empty on a surface with any silent hosts). Hosts that answered
+    additionally get a service row. If `attempted` is omitted, only responders are
+    marked (legacy behaviour)."""
     services = skipped = 0
     probed = set()
     for record in _records(path):
@@ -127,8 +136,18 @@ def httpx(store: A.Assets, scope: sc.Scope, path: Path, focus=lambda _h: False) 
             priority=priority(host, status, tech, focus))
         probed.add(host)
         services += 1
+    responders = len(probed)
+    # Mark every attempted host probed - the non-responders too, so they stop
+    # counting as unprobed. Only count in-scope attempted hosts.
+    no_service = 0
+    if attempted:
+        extra = {h.strip().lower() for h in attempted if h.strip()}
+        extra = {h for h in extra if scope.decide_url(f"https://{h}/").allowed} - probed
+        probed |= extra
+        no_service = len(extra)
     store.mark_probed(probed)
-    return {"services": services, "hosts_with_services": len(probed), "out_of_scope_skipped": skipped}
+    return {"services": services, "hosts_with_services": responders,
+            "attempted_no_service": no_service, "out_of_scope_skipped": skipped}
 
 
 def katana(store: A.Assets, scope: sc.Scope, path: Path) -> dict:

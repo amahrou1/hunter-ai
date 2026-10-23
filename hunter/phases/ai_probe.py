@@ -26,18 +26,22 @@ class AIProbePhase(AgentPhase):
 
     def must_steps(self, ctx: Context) -> list[MustStep]:
         return [
-            MustStep("M1", "Probe all resolved in-scope hosts in batched httpx runs (-title -tech-detect "
-                     "-status-code, scope rate) and `hk import httpx` until `hk hosts --unprobed` is empty."),
+            MustStep("M1", "FIRST AND NON-NEGOTIABLE: probe EVERY resolved in-scope host in batched httpx "
+                     "runs and import with `--attempted` until `hk hosts --unprobed` is EMPTY. This is the "
+                     "core of the phase; finish it before anything below. Do NOT start M6 (vhost) while any "
+                     "host is still unprobed - vhost is a bonus, probing the surface is the job."),
             MustStep("M2", "If the scope has IP/CIDR ranges, run `hk portscan` once and httpx-probe the web "
-                     "targets it prints."),
+                     "targets it prints (import those with `--attempted` too)."),
             MustStep("M3", "Run `hk baseline` so every service has its not-found answer (later fuzzing needs it)."),
             MustStep("M4", "Re-check takeover candidates with `hk takeover` and HTTP-probe any flagged host."),
             MustStep("M5", "Clone review: run `hk cluster --apply` (code auto-parks strong-proof clones), "
                      "then review each listed platform-instance group and `hk cluster --approve <parent>` only "
                      "the ones that are clearly one app repeated; leave anything that might be distinct apps."),
-            MustStep("M6", "Virtual-host enumeration: for each distinct in-scope IP with a live web "
-                     "service, run `hk vhost <ip-url>` to surface internal/staging apps that answer only to "
-                     "a specific Host header (few hunters do this - it finds hidden surface)."),
+            MustStep("M6", "ONLY AFTER `hk hosts --unprobed` IS EMPTY and you still have turns left: "
+                     "virtual-host enumeration - for a FEW (at most ~8) distinct in-scope IPs with a live web "
+                     "service, run `hk vhost <ip-url>` to surface internal/staging apps that answer only to a "
+                     "specific Host header. If you are low on turns, SKIP this - it must never cost you the "
+                     "core probing above."),
         ]
 
     def task(self, ctx: Context) -> str:
@@ -51,7 +55,12 @@ class AIProbePhase(AgentPhase):
             "2. Probe them in ONE httpx run, not one call per host: "
             "`httpx -l todo.txt -json -o httpx.jsonl -title -tech-detect -web-server -status-code "
             "-content-length -hash sha256 -favicon -ports 80,443,8080,8443 -timeout 10 -rl <scope rate> -nc`. "
-            "Then `hk import httpx httpx.jsonl`. Re-run on any remaining unprobed hosts until none are left.\n"
+            "Then import WITH the attempted list so dead hosts are cleared too: "
+            "`hk import httpx httpx.jsonl --attempted todo.txt`. This marks every host you tried as probed - "
+            "including the ones that did not answer - so they leave the unprobed queue instead of coming back "
+            "every pass. (Without `--attempted`, httpx writes no line for a silent host, it stays 'unprobed' "
+            "forever, and this phase can never finish.) Repeat `hk hosts --unprobed > todo.txt` + httpx + "
+            "import until `hk hosts --unprobed` is EMPTY. Do not move past this until it is empty.\n"
             "3. If the scope has IP or CIDR ranges, run `hk portscan` once (it scans only in-scope addresses "
             "at the program rate, skips firewalls that answer every port, verifies sensitive services). It "
             "prints web targets - probe those with httpx and import them too.\n"
@@ -70,13 +79,16 @@ class AIProbePhase(AgentPhase):
             "3 representatives, parks the rest). If a group might hold distinct apps, LEAVE it (do nothing) - "
             "it stays fully tested. Never approve a group that looks like real separate apps. Protected hosts "
             "(policy-listed, focused, admin/api/auth-named, or already carrying a lead) are never parked.\n"
-            "8. VIRTUAL HOSTS: for each distinct in-scope IP that has a live web service, run "
-            "`hk vhost http://<ip>/` (and the https/port variants where relevant). It fuzzes the Host header "
-            "with in-scope names and reports any that answer with a DIFFERENT page than the default - those "
-            "are internal/staging apps not in DNS. It records each as a vhost lead and only tries in-scope "
-            "names, so anything it finds is in scope to test later.\n"
-            "Use `hk progress \"probing\" <done> <total> hosts` as you go. Finish when `hk hosts --unprobed` "
-            "is empty and baselines are built. Summarise the live services in ./handoff.md."
+            "8. VIRTUAL HOSTS (LAST, and only if `hk hosts --unprobed` is already empty and you have turns "
+            "to spare): for a FEW distinct in-scope IPs (at most ~8, pick the most interesting origins) that "
+            "have a live web service, run `hk vhost http://<ip>/`. It fuzzes the Host header with in-scope "
+            "names and reports any that answer with a DIFFERENT page than the default - internal/staging apps "
+            "not in DNS, recorded as vhost leads. This is a bonus: if you are running low on turns, SKIP it "
+            "entirely. Never let vhost work stop you from finishing the probing in step 2 - that is the real "
+            "job and a half-probed surface is the one failure this phase must not produce.\n"
+            "Use `hk progress \"probing\" <done> <total> hosts` as you go. The phase is finished when "
+            "`hk hosts --unprobed` is empty (every resolved host probed, responders and dead alike) and "
+            "baselines are built. Summarise the live services in ./handoff.md."
         )
 
     def progress_metric(self, ctx: Context):

@@ -47,6 +47,7 @@ Inventory (read)
 
 Inventory (write)
   hk import subfinder|dnsx|httpx|katana|ffuf <file>      tool output -> inventory
+      hk import httpx out.jsonl --attempted todo.txt      also marks dead hosts probed
   hk add host <name> [--source S]
   hk add endpoint <METHOD> <url> [--source S] [--body B]
   hk add lead <kind> <url> --evidence "..." [--confirmed]
@@ -229,7 +230,15 @@ def cmd_import(kit: Kit, args) -> int:
         return 1
     scope = kit.scope()
     if args.tool == "httpx":
-        result = importers.httpx(kit.store, scope, path, kit.focus())
+        attempted = None
+        if getattr(args, "attempted", None):
+            apath = Path(args.attempted)
+            if apath.is_file():
+                attempted = {line for line in apath.read_text(
+                    encoding="utf-8", errors="replace").splitlines() if line.strip()}
+            else:
+                print(f"--attempted: no such file: {apath} (marking only responders)")
+        result = importers.httpx(kit.store, scope, path, kit.focus(), attempted=attempted)
     elif args.tool == "ffuf":
         from urllib.parse import urlsplit
         from .review import SCHEMA, same_response
@@ -1081,7 +1090,10 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(func=cmd_leads)
     sub.add_parser("handoff").set_defaults(func=cmd_handoff)
     a = sub.add_parser("import"); a.add_argument("tool", choices=sorted(importers.IMPORTERS))
-    a.add_argument("file"); a.set_defaults(func=cmd_import)
+    a.add_argument("file")
+    a.add_argument("--attempted", help="(httpx) the host list handed to httpx; every one is marked "
+                   "probed, even non-responders, so dead hosts leave the unprobed queue")
+    a.set_defaults(func=cmd_import)
     a = sub.add_parser("add"); a.add_argument("what", choices=["host", "endpoint", "lead"])
     a.add_argument("values", nargs="+"); a.add_argument("--source"); a.add_argument("--body")
     a.add_argument("--evidence"); a.add_argument("--confirmed", action="store_true"); a.set_defaults(func=cmd_add)
