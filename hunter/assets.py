@@ -452,7 +452,10 @@ class Assets:
             return list(self.db.execute("SELECT * FROM endpoints WHERE host=? ORDER BY url", (host,)))
         return list(self.db.execute("SELECT * FROM endpoints ORDER BY host, url"))
 
-    def endpoint_count(self) -> int:
+    def endpoint_count(self, source: str | None = None) -> int:
+        if source:
+            return self.db.execute("SELECT COUNT(*) AS n FROM endpoints WHERE source=?",
+                                   (source,)).fetchone()["n"]
         return self.db.execute("SELECT COUNT(*) AS n FROM endpoints").fetchone()["n"]
 
     # leads ----------------------------------------------------------------

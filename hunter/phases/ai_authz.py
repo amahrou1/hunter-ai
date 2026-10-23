@@ -19,7 +19,7 @@ class AIAuthzPhase(AgentPhase):
     name = "Access control, business logic and API testing"
     version = "2.0"
     build_step = 6
-    requires = ("00-intake", "04-map", "07-accounts")
+    requires = ("00-intake", "04-map", "07-accounts", "07c-map-auth")
     role = "authz"
     max_turns = 160
     timeout_minutes = 240

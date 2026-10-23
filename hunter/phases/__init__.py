@@ -20,6 +20,7 @@ from .ai_jsintel import JsIntelPhase
 from .ai_depconf import DepConfusionPhase
 from .ai_accounts import AIAccountsPhase
 from .ai_authflows import AuthFlowsPhase
+from .ai_map_auth import AIMapAuthPhase
 from .ai_authz import AIAuthzPhase
 from .ai_injection import AIInjectionPhase
 from .ai_graphql import GraphQLPhase
@@ -53,6 +54,10 @@ def all_phases() -> list[Phase]:
         # Account & auth-flow logic (registration/reset/2FA/OAuth ATO class).
         # Needs the accounts from 07-accounts; not IDOR (a separate effort).
         AuthFlowsPhase(),
+        # Authenticated mapping: log in with the accounts and crawl the surface
+        # the unauthenticated map/discover could not see (admin/settings/object
+        # endpoints). A no-op when there are no accounts. Feeds 08-authz-logic.
+        AIMapAuthPhase(),
         AIAuthzPhase(),
         AIInjectionPhase(),
         # GraphQL-specific testing (introspection, GET-CSRF, field exposure).
