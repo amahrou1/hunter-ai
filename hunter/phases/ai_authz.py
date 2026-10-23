@@ -30,8 +30,10 @@ class AIAuthzPhase(AgentPhase):
                      "auth-mechanism, role-string, login-weakness, origin-ip, vhost) and account for EACH in "
                      "./handoff.md: tested or skipped-with-reason. These are your sharpest starting points.",
                      "leads-addressed.md"),
-            MustStep("M1", "Broken access control / IDOR / BOLA: do an action as the higher-priv account, "
-                     "replay as the lower-priv one and with no session; a reachable object/action is a finding."),
+            MustStep("M1", "Build the IDOR/BOLA checklist: `hk idor-plan` (every ID-bearing endpoint/param in "
+                     "the inventory -> idor-checklist.md). Work EVERY row: do the action as account A, replay "
+                     "as account B and with no session, and fill its RESULT (tested-no-idor / tested-idor / "
+                     "not-tested-<reason>). A reachable object/action is a finding.", "idor-checklist.md"),
             MustStep("M2", "Tenant isolation: can account A read/change account B's org data?"),
             MustStep("M3", "Privilege escalation: can a member reach owner/admin functions (direct URL, "
                      "forced browsing, parameter/role tampering)?"),
@@ -51,9 +53,14 @@ class AIAuthzPhase(AgentPhase):
             "Test authorization and business logic, the highest-value area for this program.\n"
             "Read ./test-credentials.txt for the accounts and `hk endpoints` / `hk handoff` for the surface.\n"
             "Focus, in order:\n"
-            "1. Broken access control / IDOR / BOLA: take an action as the higher-privilege or first account, "
-            "capture the request, then replay it as the lower-privilege or second account (and with no "
-            "session). If the object or action is reachable when it should not be, that is a finding.\n"
+            "1. Broken access control / IDOR / BOLA - SYSTEMATIC, not ad-hoc. Run `hk idor-plan` first: it "
+            "writes idor-checklist.md with EVERY ID-bearing endpoint and parameter in the inventory (path ids "
+            "like /users/123, query/body ids, GraphQL node ids). Work the whole list: for each, take the "
+            "action as the higher-privilege/first account, capture the request, then replay it as the "
+            "lower-privilege/second account AND with no session. Fill each row's RESULT (tested-no-idor / "
+            "tested-idor / not-tested-<why>). A reachable object or action when it should not be is a finding. "
+            "This checklist is your coverage guarantee - do not skip rows, mark the ones you cannot test and "
+            "why.\n"
             "2. Tenant isolation: can account A read or change data belonging to account B's organisation?\n"
             "3. Privilege escalation: can a member reach owner/admin functions (by direct URL, forced "
             "browsing, parameter or role tampering)?\n"

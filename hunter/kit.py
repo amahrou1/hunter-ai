@@ -62,6 +62,7 @@ Built-in checks
   hk unlock <url>                  try path/header bypasses on a 401/403 (records a lead if one works)
   hk secrets <file|dir>            scan for leaked keys/tokens (reports kinds, values masked)
   hk vhost <ip-url>                find virtual hosts on an IP (Host-header fuzz, in-scope names)
+  hk idor-plan                     build the IDOR/BOLA checklist of every ID-bearing endpoint (-> idor-checklist.md)
   hk origin <host>                 find the real origin IP behind a WAF/CDN (passive); records a lead
   hk login-probe <url>             try default/collected creds on a login gate (capped, not brute force);
                                    --enum for differential username enumeration
@@ -560,6 +561,38 @@ def cmd_origin(kit: Kit, args) -> int:
                                status="signature-match")
     if confirmed:
         print(f"recorded {confirmed} confirmed origin IP(s) as leads - fuzz them directly next.")
+    return 0
+
+
+def cmd_idor_plan(kit: Kit, args) -> int:
+    """Build the systematic IDOR/BOLA checklist: every ID-bearing endpoint/param
+    in the inventory, one row to test cross-account, cross-tenant and
+    unauthenticated. Extraction is complete and deterministic (code); the authz
+    phase works each row and records the result. Prints the checklist and, unless
+    --stdout, writes it to idor-checklist.md in the phase work dir."""
+    from . import idor
+    rows = kit.store.endpoints()
+    checklist = idor.build_checklist(rows)
+    if args.json:
+        print(json.dumps(checklist, indent=1)); return 0
+    lines = [f"# IDOR / BOLA checklist ({len(checklist)} ID-bearing targets)", "",
+             "For each: do the action as account A, replay as account B and with NO session.",
+             "Mark result: tested-no-idor | tested-idor | not-tested-<reason>.", ""]
+    if not checklist:
+        lines.append("_No ID-bearing endpoints found in the inventory yet._")
+    for i, c in enumerate(checklist, 1):
+        loc = c["where"] + (f" '{c['param']}'" if c.get("param") else
+                            (f" seg#{c['segment_index']} after /{c['after']}" if c["where"] == "path" else ""))
+        lines.append(f"- [ ] {i}. `{c['method']} {c['url']}` -> {loc} ({c['id_type']})  RESULT: ")
+    text = "\n".join(lines) + "\n"
+    if not args.stdout:
+        try:
+            Path("idor-checklist.md").write_text(text, encoding="utf-8")
+            print(f"wrote {len(checklist)} IDOR target(s) to idor-checklist.md")
+        except OSError:
+            print(text)
+    else:
+        print(text)
     return 0
 
 
@@ -1068,6 +1101,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(func=cmd_secrets)
     a = sub.add_parser("vhost"); a.add_argument("ip_url"); a.add_argument("--json", action="store_true")
     a.set_defaults(func=cmd_vhost)
+    a = sub.add_parser("idor-plan"); a.add_argument("--stdout", action="store_true")
+    a.add_argument("--json", action="store_true"); a.set_defaults(func=cmd_idor_plan)
     a = sub.add_parser("origin"); a.add_argument("host")
     a.add_argument("--ips", help="extra candidate IPs you found via Shodan/Censys/SecurityTrails, comma-separated")
     a.add_argument("--json", action="store_true"); a.set_defaults(func=cmd_origin)
