@@ -120,3 +120,36 @@ def test_incomplete_probe_does_not_satisfy_dependents(env, tmp_path):
         _add_resolved_probed(store, f"todo{i}.api.acme.test", probed=False, with_service=False)
     phase = AIProbePhase()
     assert phase.outputs_present(_ctx(tmp_path, store)) is False
+
+
+def test_covered_floor_is_ninety_percent(env, tmp_path):
+    """A long dead-host tail must not block forever: >=90% probed is 'covered',
+    but a surface only 62% probed (the Cornelsen case) is NOT - keep probing."""
+    store = _store(tmp_path)
+    phase = AIMapAuthReuse = AIProbePhase()
+    # 1000 resolved hosts; 900 probed (90%) -> covered
+    for i in range(900):
+        _add_resolved_probed(store, f"p{i}.api.acme.test", probed=True, with_service=True)
+    for i in range(100):
+        _add_resolved_probed(store, f"u{i}.api.acme.test", probed=False, with_service=False)
+    assert phase._covered(store) is True
+    # now make it 62% probed -> NOT covered
+    store2 = _store(tmp_path / "b")
+    for i in range(620):
+        _add_resolved_probed(store2, f"p{i}.api.acme.test", probed=True, with_service=True)
+    for i in range(380):
+        _add_resolved_probed(store2, f"u{i}.api.acme.test", probed=False, with_service=False)
+    assert phase._covered(store2) is False
+
+
+def test_progress_metric_counts_probed_hosts(env, tmp_path):
+    """probe.progress_metric must be hosts-probed, so a pass that probes more
+    (dead) hosts counts as progress even if it adds no service rows."""
+    from types import SimpleNamespace
+    store = _store(tmp_path)
+    for i in range(50):
+        _add_resolved_probed(store, f"p{i}.api.acme.test", probed=True, with_service=False)
+    for i in range(30):
+        _add_resolved_probed(store, f"u{i}.api.acme.test", probed=False, with_service=False)
+    ctx = SimpleNamespace(assets=lambda: store)
+    assert AIProbePhase().progress_metric(ctx) == 50   # 50 probed, regardless of services

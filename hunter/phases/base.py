@@ -189,6 +189,15 @@ class Phase:
         Default: no."""
         return False
 
+    def progress_metric(self, ctx: Context):
+        """A number the orchestrator compares between PARTIAL attempts to decide
+        whether the phase is still advancing (and worth another pass). Return
+        None to use the default (total inventory rows). A phase whose real
+        progress is NOT 'new rows added' overrides this - e.g. probe returns how
+        many hosts it has probed, so a pass that probes many dead hosts (adding
+        few service rows) still counts as progress."""
+        return None
+
 
 class PlannedPhase(Phase):
     """Placeholder for a phase that is designed but not built yet. It says

@@ -79,16 +79,31 @@ class AIProbePhase(AgentPhase):
             "is empty and baselines are built. Summarise the live services in ./handoff.md."
         )
 
+    def progress_metric(self, ctx: Context):
+        """Probe advances by PROBING HOSTS, not by adding inventory rows. A pass
+        that probes hundreds more (mostly dead/internal) hosts adds few new
+        service rows, which the default row-count would misread as 'not
+        advancing' and stop - leaving the surface half-probed (the Cornelsen
+        bug). Counting probed hosts keeps probe going until the surface is
+        actually covered."""
+        try:
+            return len(ctx.assets().hosts(scope=A.IN, resolved=True)) \
+                - len(ctx.assets().unprobed_hosts())
+        except Exception:  # noqa: BLE001
+            return None
+
     def _covered(self, store: A.Assets) -> bool:
-        """True when probe's substantive work is done: essentially every
-        resolved in-scope host has been probed. The resolvable surface is
-        covered even if the agent's narrative handoff is thin or it ran out of
-        turns on bookkeeping. A tiny unprobed tail (DNS flaps, per-host
-        timeouts) does not count as unfinished."""
+        """True when probe's substantive work is done: the great majority of
+        resolved in-scope hosts have been probed. A long tail of slow/dead
+        internal hosts (corpinter-style networks that time out) should NOT keep
+        the whole pipeline blocked forever - at >=90% probed the testable surface
+        is covered and map can start, probe having fingerprinted everything that
+        answers. The agent's handoff is a nicety, not required here."""
         resolved = len(store.hosts(scope=A.IN, resolved=True))
         if resolved == 0:
             return False
-        return len(store.unprobed_hosts()) <= max(5, int(resolved * 0.005))
+        probed = resolved - len(store.unprobed_hosts())
+        return probed >= max(1, int(resolved * 0.90))
 
     def outputs_present(self, ctx: Context) -> bool:
         # Probe's "output" for a dependent phase (04-map) is a probed inventory,

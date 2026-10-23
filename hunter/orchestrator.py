@@ -277,11 +277,23 @@ class Orchestrator:
                 unmet.append(required)
         return unmet
 
-    def _progress_count(self) -> int:
-        """A cheap fingerprint of how much the inventory holds. If a PARTIAL
-        phase increased it, the phase is still making progress and is worth
-        continuing (recon on a huge program needs several passes)."""
+    def _progress_count(self, phase=None) -> int:
+        """A cheap fingerprint of how much a PARTIAL phase has advanced. If it
+        grew between attempts, the phase is still making progress and is worth
+        continuing (a big phase needs several passes). A phase can expose its OWN
+        metric via progress_metric(ctx) - probe counts HOSTS PROBED, not total
+        inventory rows, so a pass that probes 500 more (mostly dead) hosts is not
+        misread as 'not advancing' and stopped with the surface half-probed (the
+        Cornelsen bug: it stopped at 1381/2237 probed because few new service
+        rows were added on the last pass)."""
         assert self.state is not None
+        if phase is not None:
+            try:
+                metric = phase.progress_metric(self.ctx)
+                if metric is not None:
+                    return int(metric)
+            except Exception:  # noqa: BLE001 - fall back to the inventory count
+                pass
         total = 0
         for table in ("hosts", "services", "endpoints", "leads", "findings"):
             try:
@@ -310,7 +322,7 @@ class Orchestrator:
         hard_cap = 12
         for attempt in range(1, hard_cap + 1):
             self.ctx.phase_id = phase.id
-            before = self._progress_count()
+            before = self._progress_count(phase)
             self.state.start_phase(phase.id, phase.version)
             started = self.clock()
             try:
@@ -339,7 +351,7 @@ class Orchestrator:
                 return
             if any(b["phase_id"] == phase.id for b in self.state.open_blockers()):
                 return  # needs the operator; the end-of-run blocker wait handles it
-            after = self._progress_count()
+            after = self._progress_count(phase)
             if after <= before:
                 return  # partial and not advancing: stop, do not spin
             if attempt < hard_cap:
