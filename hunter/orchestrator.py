@@ -353,6 +353,19 @@ class Orchestrator:
                 return  # needs the operator; the end-of-run blocker wait handles it
             after = self._progress_count(phase)
             if after <= before:
+                # Not advancing. Give the phase one chance to reconcile state in
+                # code (e.g. probe clearing its dead-host tail the agent left
+                # unprobed) and finish cleanly, instead of looping PARTIAL
+                # forever. on_stall returns True if it changed enough to re-check.
+                try:
+                    if phase.on_stall(self.ctx):
+                        self.ctx.phase_id = phase.id
+                        outcome = phase.check(self.ctx, self.ctx.assets())
+                        self.ctx.phase_id = None
+                        self.state.finish_phase(phase.id, outcome.status, outcome.summary)
+                        self._log(f"    {phase.id}: reconciled on stall -> {outcome.status}: {outcome.summary}")
+                except Exception as exc:  # noqa: BLE001 - never let a reconcile crash the run
+                    self._log(f"    {phase.id}: on_stall error ({type(exc).__name__}: {exc}); stopping")
                 return  # partial and not advancing: stop, do not spin
             if attempt < hard_cap:
                 self._log(f"    {phase.id}: partial but still finding things ({before} -> {after}); continuing")

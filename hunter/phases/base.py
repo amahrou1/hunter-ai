@@ -198,6 +198,17 @@ class Phase:
         few service rows) still counts as progress."""
         return None
 
+    def on_stall(self, ctx: Context) -> bool:
+        """Called by the orchestrator when this phase is PARTIAL and has stopped
+        advancing (the agent cannot make more progress). A phase may do a final
+        code-side reconciliation here and return True if that changed state
+        enough to warrant one more check/attempt. Default: nothing to do.
+
+        Probe uses this to clear its dead/non-responding host tail when the agent
+        ran out of turns without writing a handoff, so the phase can complete
+        instead of looping PARTIAL forever on hosts that serve no HTTP."""
+        return False
+
 
 class PlannedPhase(Phase):
     """Placeholder for a phase that is designed but not built yet. It says

@@ -132,10 +132,58 @@ class AIProbePhase(AgentPhase):
         except Exception:  # noqa: BLE001
             return False
 
+    def _reconcile_dead_tail(self, ctx: Context, store: A.Assets, force: bool = False) -> int:
+        """Mark the still-unprobed resolved hosts as probed-no-service in code,
+        so the phase does not depend on the agent remembering to import with
+        `--attempted`.
+
+        A resolved host that is still unprobed AFTER the agent has run a real
+        probing pass is a host httpx was pointed at and got nothing from - dead,
+        firewalled or non-web (the Cornelsen tail: ~860 *.dev/.stage internal
+        service hosts that resolve but serve no HTTP). The httpx importer only
+        marks RESPONDERS probed, so without this these hosts sit unprobed forever
+        and the phase never completes - the agent probes the same 42-host public
+        batches each pass while the count stays frozen at 1378/2238.
+
+        Guard: only runs when the agent will not probe more - either it wrote a
+        handoff (declared done) or `force` is set (the orchestrator saw the probe
+        stall). It never short-circuits a probe still batching. Marking a
+        non-responder probed-no-service loses nothing: it has no service row, so
+        no later phase would test it; it just stops blocking completion. Returns
+        how many hosts were reconciled."""
+        work = ctx.target.output / "phases" / self.id / "work"
+        # Reconcile when the agent has either DECLARED itself finished (handoff.md)
+        # or STALLED (force=True, passed by on_stall when the orchestrator sees no
+        # more progress). Both mean the agent will not probe more, so the hosts
+        # still unprobed are genuine non-responders, not a batch yet to come. We
+        # never reconcile on a live, still-batching probe: without handoff and
+        # without a stall, this returns 0.
+        if not force and not (work / "handoff.md").exists():
+            return 0
+        dead = store.unprobed_hosts()
+        if dead:
+            store.mark_probed(dead)  # probed=1, no service row added
+            log = getattr(ctx, "log", None)
+            if callable(log):
+                log(f"    probe: reconciled {len(dead)} unprobed host(s) as probed-no-service "
+                    f"(resolved but served no HTTP; agent {'stalled' if force else 'finished'})")
+        return len(dead)
+
+    def on_stall(self, ctx: Context) -> bool:
+        """Agent stopped advancing. Clear the dead-host tail in code so the phase
+        can complete even though the agent never wrote a handoff (it ran out of
+        turns). Returns True when it actually cleared hosts, so the orchestrator
+        re-checks and can mark the phase DONE."""
+        return self._reconcile_dead_tail(ctx, ctx.assets(), force=True) > 0
+
     def check(self, ctx: Context, store: A.Assets) -> PhaseResult:
         total = store.service_count()
         if total == 0:
             return PhaseResult(st.PARTIAL, "no live web service found yet")
+        # Code-side safety net: clear the dead/non-responding tail so completion
+        # does not hinge on the agent importing with --attempted. Runs only after
+        # a real probing pass (see _reconcile_dead_tail).
+        reconciled = self._reconcile_dead_tail(ctx, store)
         # Ground truth: when the resolvable surface is covered, the phase is
         # complete even without a rich handoff. Without this a fully-probed run
         # can loop PARTIAL for hours, re-probing nothing (the Mercedes symptom:
@@ -146,8 +194,9 @@ class AIProbePhase(AgentPhase):
             return PhaseResult(st.PARTIAL, f"{total} live service(s); agent did not finish, will continue")
         parked = self._cluster(ctx, store)
         suffix = f"; collapsed {parked} infra clone(s) to representatives" if parked else ""
+        dead_note = f"; cleared {reconciled} non-responding host(s)" if reconciled else ""
         tail = f" ({remaining} host(s) unprobed - DNS/timeout tail)" if remaining else ""
-        return PhaseResult(st.DONE, f"{total} live web service(s) fingerprinted{tail}{suffix}")
+        return PhaseResult(st.DONE, f"{total} live web service(s) fingerprinted{tail}{suffix}{dead_note}")
 
     def _cluster(self, ctx: Context, store: A.Assets) -> int:
         """Collapse infrastructure clones so the testing phases see distinct apps.

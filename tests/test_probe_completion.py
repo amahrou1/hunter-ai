@@ -153,3 +153,43 @@ def test_progress_metric_counts_probed_hosts(env, tmp_path):
         _add_resolved_probed(store, f"u{i}.api.acme.test", probed=False, with_service=False)
     ctx = SimpleNamespace(assets=lambda: store)
     assert AIProbePhase().progress_metric(ctx) == 50   # 50 probed, regardless of services
+
+
+def test_on_stall_clears_dead_tail(env, tmp_path):
+    """The Cornelsen fix: when the agent stalls (no handoff, out of turns) with a
+    tail of resolved hosts that never answered HTTP, on_stall marks them
+    probed-no-service in code so the phase can complete instead of looping."""
+    from types import SimpleNamespace
+    store = _store(tmp_path)
+    # 1378 probed-with-service (the responders), 860 resolved-but-never-answered.
+    for i in range(1378):
+        _add_resolved_probed(store, f"live{i}.api.acme.test", probed=True, with_service=True)
+    for i in range(860):
+        _add_resolved_probed(store, f"dead{i}.api.acme.test", probed=False, with_service=False)
+    assert len(store.unprobed_hosts()) == 860
+    phase = AIProbePhase()
+    ctx = SimpleNamespace(assets=lambda: store,
+                          target=SimpleNamespace(output=tmp_path / "out"))
+    # agent stalled, no handoff written -> on_stall clears the tail
+    assert phase.on_stall(ctx) is True
+    assert store.unprobed_hosts() == []           # tail cleared
+    assert store.service_count() == 1378          # no fake services invented
+    # a second stall has nothing left to do
+    assert phase.on_stall(ctx) is False
+
+
+def test_no_reconcile_while_probe_still_batching(env, tmp_path):
+    """Safety: without a handoff and without a stall (force), the dead-tail
+    reconcile does NOT fire - a live, still-batching probe is never cut short."""
+    from types import SimpleNamespace
+    store = _store(tmp_path)
+    for i in range(100):
+        _add_resolved_probed(store, f"live{i}.api.acme.test", probed=True, with_service=True)
+    for i in range(50):
+        _add_resolved_probed(store, f"todo{i}.api.acme.test", probed=False, with_service=False)
+    phase = AIProbePhase()
+    ctx = SimpleNamespace(assets=lambda: store,
+                          target=SimpleNamespace(output=tmp_path / "out"))
+    # no handoff.md, force defaults False -> nothing cleared
+    assert phase._reconcile_dead_tail(ctx, store) == 0
+    assert len(store.unprobed_hosts()) == 50
