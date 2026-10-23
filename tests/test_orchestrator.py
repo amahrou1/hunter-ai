@@ -367,6 +367,38 @@ def test_partial_phase_not_retried_without_progress(make_target, settings_secret
     assert st.State(target.state_db).phase("02-stuck")["status"] == st.PARTIAL
 
 
+class StallsThenReconciles(Phase):
+    """A phase that returns PARTIAL with no progress, but reconciles state in
+    on_stall so the orchestrator re-checks and marks it DONE - the probe
+    dead-tail pattern: the agent cannot probe more, code clears the tail."""
+    id, name, version = "03-probe-like", "stalls then reconciles", "1"
+
+    def __init__(self, log):
+        self.log = log
+        self._reconciled = False
+
+    def run(self, ctx):
+        self.log.append("run")
+        return PhaseResult(st.PARTIAL, "agent did not finish")
+
+    def on_stall(self, ctx):
+        self.log.append("stall")
+        self._reconciled = True
+        return True                                       # changed state, re-check
+
+    def check(self, ctx, store):
+        return PhaseResult(st.DONE, "reconciled") if self._reconciled \
+            else PhaseResult(st.PARTIAL, "still stuck")
+
+
+def test_stalled_phase_reconciles_to_done_via_on_stall(make_target, settings_secrets, notifier):
+    target = make_target()
+    log = []
+    _orch(target, settings_secrets, notifier, [StallsThenReconciles(log)]).run()
+    assert log == ["run", "stall"]                        # ran once, stalled, reconciled (no spin)
+    assert st.State(target.state_db).phase("03-probe-like")["status"] == st.DONE
+
+
 def test_clear_phase_blockers_dedupes(tmp_path):
     s = st.State(tmp_path / "s.db")
     s.add_blocker("00-intake", "assets owned by TikTok or its subsidiaries")
