@@ -66,9 +66,12 @@ class AIAuthzPhase(AgentPhase):
             "every admin/internal/login gate in the inventory (discover findings, jsintel hidden-endpoint and "
             "auth-mechanism leads, vhost leads):\n"
             "   a. `hk login-probe <login-url>` - it tries the credentials the run collected (org GitHub/JS "
-            "leaks) first, then a small set of vendor defaults. It is CAPPED in code (~25 attempts) and is NOT "
-            "a brute force; use it, do not try to brute force by hand (that is blocked). A success is recorded "
-            "as a finding automatically.\n"
+            "leaks) first, then a small set of vendor defaults. It auto-detects the form field names, but if "
+            "the login is a JSON API or an unusual form, FIRST read the page/JS for the real field names and "
+            "pass them: `--user-field <name> --pass-field <name>` (add `--json-body` for a JSON API, and "
+            "`--extra csrf=<token>` for any required hidden field). It is CAPPED in code (~25 attempts) and is "
+            "NOT a brute force; use it, do not try to brute force by hand (that is blocked). A success is "
+            "recorded as a finding automatically.\n"
             "   b. `hk login-probe <login-url> --enum` - differential username enumeration. If it finds valid "
             "usernames, that is a lead and a reason to try the collected creds for those users.\n"
             "   c. CLIENT-SIDE-ENFORCED ACCESS: if the gate denies with a page/redirect/status that the "
@@ -91,6 +94,11 @@ class AIAuthzPhase(AgentPhase):
 
     def check(self, ctx: Context, store: A.Assets) -> PhaseResult:
         n = len(store.findings())
-        if not self.outputs_present(ctx):
-            return PhaseResult(st.PARTIAL, f"{n} candidate finding(s); agent did not finish, will continue")
-        return PhaseResult(st.DONE, f"{n} candidate finding(s) recorded so far")
+        missing = self.missing_artifacts(ctx)
+        if not self.outputs_present(ctx) or missing:
+            # Stay PARTIAL (resume next run) until the handoff AND the contract
+            # artifacts exist - including leads-addressed.md, so the high-signal
+            # leads meant for this phase are actually accounted for, not dropped.
+            detail = f"; missing {', '.join(missing)}" if missing else "; agent did not finish"
+            return PhaseResult(st.PARTIAL, f"{n} candidate finding(s){detail}, will continue")
+        return PhaseResult(st.DONE, f"{n} candidate finding(s) recorded")

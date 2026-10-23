@@ -235,6 +235,43 @@ def enumerate_users(url: str, opener, usernames=ENUM_USERNAMES, field_map: dict 
     return out
 
 
+import re as _re
+
+# Common login form field names, in priority order - used to auto-detect the
+# real field names when the caller did not give a field_map.
+_USER_FIELDS = ("username", "user", "email", "login", "userid", "user_name",
+                "user_id", "account", "uname", "j_username", "loginfmt")
+_PASS_FIELDS = ("password", "pass", "passwd", "pwd", "pw", "j_password")
+
+
+def detect_fields(url: str, opener, timeout: float = 15.0) -> dict | None:
+    """Fetch the login page and read the form for the real username/password
+    field names, so the probe works on forms that do not use username/password.
+    Returns a field_map or None if it cannot tell (caller falls back to defaults)."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        with opener.open(req, timeout=timeout) as resp:
+            html = resp.read(200000).decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001
+        return None
+    # name="..." on password inputs and the text/email input just before them.
+    pass_field = None
+    for m in _re.finditer(r'<input[^>]+type=["\']?password["\']?[^>]*>', html, _re.I):
+        nm = _re.search(r'name=["\']([^"\']+)["\']', m.group(0))
+        if nm:
+            pass_field = nm.group(1)
+            break
+    names = [m.group(1) for m in _re.finditer(r'<input[^>]+name=["\']([^"\']+)["\']', html, _re.I)]
+    user_field = None
+    for cand in _USER_FIELDS:
+        if any(cand == n.lower() for n in names):
+            user_field = next(n for n in names if n.lower() == cand)
+            break
+    if not user_field and not pass_field:
+        return None
+    return {"user": user_field or "username", "password": pass_field or "password"}
+
+
 def _mask(pw: str) -> str:
     if not pw:
         return "(empty)"

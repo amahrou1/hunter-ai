@@ -27,7 +27,8 @@ class AIJsPhase(AgentPhase):
             MustStep("M2", "For each file, extract endpoints and parameters (fetch/axios/XHR/route tables/"
                      "GraphQL ops) and add in-scope ones with `hk add endpoint`; append the URL to ./done.txt."),
             MustStep("M3", "Record secrets (API keys, tokens, internal URLs) as `hk add lead secret-in-js` "
-                     "by KIND only - never write a secret value."),
+                     "by KIND only - never write a secret value. A hardcoded username:password (default login, "
+                     "basic-auth) -> `hk creds add 'user:pass'` so the authz phase tries it on login gates."),
         ]
 
     def task(self, ctx: Context) -> str:

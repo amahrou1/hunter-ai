@@ -139,3 +139,31 @@ def test_json_mode_login():
         assert len(res["working"]) == 1
     finally:
         srv.shutdown()
+
+
+def test_detect_fields_reads_form():
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200); self.end_headers()
+            self.wfile.write(b'<form><input name="email" type="text"><input name="pass" type="password"></form>')
+        def log_message(self, *a): pass
+    srv, _ = _server(H)
+    page = f"http://127.0.0.1:{srv.server_address[1]}/login"
+    try:
+        fm = loginprobe.detect_fields(page, _opener())
+        assert fm == {"user": "email", "password": "pass"}
+    finally:
+        srv.shutdown()
+
+
+def test_detect_fields_none_when_no_form():
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200); self.end_headers(); self.wfile.write(b"<html>no form here</html>")
+        def log_message(self, *a): pass
+    srv, _ = _server(H)
+    page = f"http://127.0.0.1:{srv.server_address[1]}/x"
+    try:
+        assert loginprobe.detect_fields(page, _opener()) is None
+    finally:
+        srv.shutdown()

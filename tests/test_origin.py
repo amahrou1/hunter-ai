@@ -62,3 +62,20 @@ def test_confirm_marks_cdn_server():
 def test_root_two_level_suffix():
     assert origin._root("a.b.example.co.uk") == "example.co.uk"
     assert origin._root("app.example.com") == "example.com"
+
+
+def test_extra_ips_become_candidates(monkeypatch):
+    monkeypatch.setattr(origin, "_edge_ips", lambda h: {"104.16.0.1"} if h == "app.example.com" else set())
+    monkeypatch.setattr(origin, "crtsh_hosts", lambda d, o, **k: [])
+    disc = origin.candidate_ips("app.example.com", opener=None, extra_ips=["203.0.113.9", "104.16.0.1"])
+    assert "203.0.113.9" in disc["candidates"]       # OSINT candidate kept
+    assert "104.16.0.1" not in disc["candidates"]     # the edge IP is excluded
+
+
+def test_mail_sibling_flagged_as_infra(monkeypatch):
+    resolved = {"app.example.com": {"104.16.0.1"}, "mail.example.com": {"198.51.100.7"}}
+    monkeypatch.setattr(origin, "_edge_ips", lambda h: resolved.get(h, set()))
+    monkeypatch.setattr(origin, "crtsh_hosts", lambda d, o, **k: ["app.example.com", "mail.example.com"])
+    disc = origin.candidate_ips("app.example.com", opener=None)
+    assert "198.51.100.7" in disc["candidates"]
+    assert any("infra" in r for r in disc["candidates"]["198.51.100.7"])

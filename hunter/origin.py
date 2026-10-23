@@ -73,22 +73,41 @@ def crtsh_hosts(domain: str, opener, timeout: float = 25.0, cap: int = 200) -> l
     return sorted(names)[:cap]
 
 
-def candidate_ips(host: str, opener) -> dict:
+# Hostnames that commonly point at the real origin / corporate network rather
+# than the CDN edge: mail and admin infra is rarely behind the web WAF.
+_ORIGIN_HINT_PREFIXES = ("origin", "direct", "cpanel", "whm", "webmail", "mail",
+                         "smtp", "mx", "ftp", "ssh", "vpn", "remote", "server",
+                         "host", "backend", "api-direct", "dev", "staging", "old")
+
+
+def candidate_ips(host: str, opener, extra_ips=None) -> dict:
     """Collect candidate origin IPs for a host from passive sources. Returns the
-    edge IPs (to exclude) and the candidate origin IPs (resolve of sibling names
-    from CT that are not the edge)."""
+    edge IPs (to exclude) and the candidate origin IPs with why each was found.
+
+    Sources (all passive, no target contact): certificate-transparency sibling
+    names (their A records are often the origin), mail/infra sibling names
+    (mail/smtp/cpanel rarely sit behind the web WAF), and any `extra_ips` the
+    caller gathered from its own OSINT (Shodan/Censys/SecurityTrails with the
+    operator's keys) - those are confirmed the same way."""
     root = _root(host)
     edge = _edge_ips(host)
     candidates: dict[str, list[str]] = {}   # ip -> reasons
-    # Sibling hostnames from certificate transparency; their A records are often
-    # the real origin (origin.x, direct.x, mail.x, cpanel.x, a numbered host).
-    for name in crtsh_hosts(root, opener):
+
+    def add(ip: str, why: str):
+        if ip and ip not in edge:
+            candidates.setdefault(ip, []).append(why)
+
+    siblings = crtsh_hosts(root, opener)
+    for name in siblings:
         if name == host:
             continue
+        label = name.split(".")[0]
+        hint = any(label == p or label.startswith(p + "-") or label.startswith(p) for p in _ORIGIN_HINT_PREFIXES)
         for ip in _edge_ips(name):
-            if ip in edge:
-                continue
-            candidates.setdefault(ip, []).append(f"cert sibling {name}")
+            add(ip, f"{'infra/mail' if hint else 'cert'} sibling {name}")
+    # Caller-supplied OSINT candidates (Shodan/Censys/SecurityTrails IP history).
+    for ip in extra_ips or ():
+        add(str(ip).strip(), "OSINT candidate (historical DNS / Shodan / Censys)")
     return {"host": host, "edge_ips": sorted(edge), "candidates": candidates}
 
 

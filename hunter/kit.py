@@ -527,7 +527,8 @@ def cmd_origin(kit: Kit, args) -> int:
         print(f"BLOCKED: {host} is not in scope")
         return 1
     opener = webprobe.opener_through(os.environ.get("HUNTER_PROXY", ""), os.environ.get("SSL_CERT_FILE"))
-    disc = origin.candidate_ips(host, opener)
+    extra_ips = [ip.strip() for ip in (args.ips or "").split(",") if ip.strip()]
+    disc = origin.candidate_ips(host, opener, extra_ips=extra_ips)
     cands = disc["candidates"]
     if not cands:
         print(f"{host}: no candidate origin IP found (edge: {', '.join(disc['edge_ips']) or 'unresolved'})")
@@ -631,7 +632,17 @@ def cmd_login_probe(kit: Kit, args) -> int:
         print("BLOCKED: not in scope")
         return 1
     opener = webprobe.opener_through(os.environ.get("HUNTER_PROXY", ""), os.environ.get("SSL_CERT_FILE"))
-    field_map = {"user": args.user_field or "username", "password": args.pass_field or "password"}
+    # If the caller did not name the form fields, try to read them off the login
+    # page (so non-standard forms - email/login/pass/JSON keys - still work).
+    if args.user_field or args.pass_field:
+        field_map = {"user": args.user_field or "username", "password": args.pass_field or "password"}
+    else:
+        detected = loginprobe.detect_fields(args.url, opener)
+        if detected:
+            field_map = detected
+            print(f"detected form fields: user='{field_map['user']}', password='{field_map['password']}'")
+        else:
+            field_map = {"user": "username", "password": "password"}
     if args.extra:
         for kv in args.extra.split(","):
             if "=" in kv:
@@ -1057,8 +1068,9 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(func=cmd_secrets)
     a = sub.add_parser("vhost"); a.add_argument("ip_url"); a.add_argument("--json", action="store_true")
     a.set_defaults(func=cmd_vhost)
-    a = sub.add_parser("origin"); a.add_argument("host"); a.add_argument("--json", action="store_true")
-    a.set_defaults(func=cmd_origin)
+    a = sub.add_parser("origin"); a.add_argument("host")
+    a.add_argument("--ips", help="extra candidate IPs you found via Shodan/Censys/SecurityTrails, comma-separated")
+    a.add_argument("--json", action="store_true"); a.set_defaults(func=cmd_origin)
     a = sub.add_parser("login-probe")
     a.add_argument("url")
     a.add_argument("--enum", action="store_true", help="differential username enumeration (no password guessing)")
