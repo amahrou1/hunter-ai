@@ -17,6 +17,7 @@ import json
 import os
 import ssl
 import sys
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -61,6 +62,9 @@ Built-in checks
   hk unlock <url>                  try path/header bypasses on a 401/403 (records a lead if one works)
   hk secrets <file|dir>            scan for leaked keys/tokens (reports kinds, values masked)
   hk vhost <ip-url>                find virtual hosts on an IP (Host-header fuzz, in-scope names)
+  hk login-probe <url>             try default/collected creds on a login gate (capped, not brute force);
+                                   --enum for differential username enumeration
+  hk creds add 'user:pass'         record a credential the run found (tried on in-scope login gates)
   hk cache <url>                   probe web-cache poisoning / deception (detect-only, records a lead)
   hk techhints                     tech-specific test hints for the stacks found on this target
   hk cluster [--apply]             show infrastructure clone groups (same backend); --apply parks them
@@ -508,6 +512,122 @@ def cmd_vhost(kit: Kit, args) -> int:
     return 0
 
 
+def _creds_file(kit: Kit):
+    return kit.target.output / "found-credentials.txt"
+
+
+def collected_creds(kit: Kit) -> list[tuple[str, str]]:
+    """Credentials the run has gathered for THIS target: pairs the dork/JS
+    phases saved to found-credentials.txt (org GitHub leaks, config dumps, JS),
+    plus any the operator put in test-credentials.txt. Tried before the generic
+    defaults because org-specific creds hit far more often."""
+    pairs: list[tuple[str, str]] = []
+    for name in ("found-credentials.txt", None):
+        path = _creds_file(kit) if name else kit.target.input_path("test-credentials.txt")
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            # accept "user:pass", "user / pass", "user,pass"
+            for sep in (":", " / ", "|", ","):
+                if sep in line:
+                    u, _, p = line.partition(sep)
+                    u, p = u.strip(), p.strip()
+                    if u and len(u) < 128 and len(p) < 128:
+                        pairs.append((u, p))
+                    break
+    # dedupe, keep order
+    seen, out = set(), []
+    for pair in pairs:
+        if pair not in seen:
+            seen.add(pair); out.append(pair)
+    return out
+
+
+def cmd_creds(kit: Kit, args) -> int:
+    """Record a credential the run found (org GitHub, a config dump, JS) so the
+    login-probe tries it on gated dashboards. Stored masked in notes; the raw
+    pair goes only to the per-target found-credentials.txt the probe reads."""
+    if args.action == "add":
+        if not args.value or (":" not in args.value and "/" not in args.value):
+            print("usage: hk creds add 'user:password'  (or user/password)")
+            return 1
+        with _creds_file(kit).open("a", encoding="utf-8") as fh:
+            fh.write(args.value.strip() + "\n")
+        u = args.value.split(":")[0].split("/")[0].strip()
+        print(f"recorded credential for user '{u}' (will be tried on in-scope login gates)")
+        return 0
+    # list
+    pairs = collected_creds(kit)
+    print(f"{len(pairs)} credential(s) collected for this target")
+    for u, _p in pairs:
+        print(f"  {u}:****")
+    return 0
+
+
+def cmd_login_probe(kit: Kit, args) -> int:
+    """Try a SMALL, capped set of credentials against an in-scope login gate:
+    the org-specific creds the run found first, then generic vendor defaults.
+    Plus optional differential username enumeration. This is the obvious-guesses
+    a human tries by hand, never a brute force - the attempt cap is enforced in
+    loginprobe.py and cannot be raised from here."""
+    from . import loginprobe
+    scope = kit.scope()
+    if not scope.decide_url(args.url).allowed:
+        print("BLOCKED: not in scope")
+        return 1
+    opener = webprobe.opener_through(os.environ.get("HUNTER_PROXY", ""), os.environ.get("SSL_CERT_FILE"))
+    field_map = {"user": args.user_field or "username", "password": args.pass_field or "password"}
+    if args.extra:
+        for kv in args.extra.split(","):
+            if "=" in kv:
+                k, _, v = kv.partition("="); field_map[k.strip()] = v.strip()
+
+    if args.enum:
+        res = loginprobe.enumerate_users(args.url, opener, field_map=field_map, json_mode=args.json_body)
+        if args.json:
+            print(json.dumps(res, indent=1)); return 0
+        if res.get("note"):
+            print(res["note"]); return 0
+        cands = res["valid_candidates"]
+        if not cands:
+            print(f"username enumeration: no distinguishable valid users in {res['tried']} tried")
+            return 0
+        print(f"username enumeration: {len(cands)} candidate valid user(s):")
+        for c in cands:
+            print(f"  {c['user']}  ({c['note']})")
+        kit.store.add_lead("login-weakness", args.url, f"ai:{kit.phase}",
+                           f"username enumeration: valid-looking users {[c['user'] for c in cands][:10]}",
+                           status="signature-match")
+        return 0
+
+    # Credential attempt: collected (org) creds first, then defaults, under the cap.
+    creds = collected_creds(kit) + list(loginprobe.DEFAULT_CREDS)
+    res = loginprobe.probe(args.url, opener, creds, field_map=field_map, json_mode=args.json_body)
+    if args.json:
+        print(json.dumps(res, indent=1)); return 0
+    if res.get("note") and not res["working"]:
+        print(f"{args.url}: {res['note']} (tried {res['tried']})")
+    working = res["working"]
+    if not working:
+        print(f"{args.url}: no working credential in {res['tried']} attempt(s)")
+        return 0
+    for w in working:
+        print(f"LOGIN SUCCESS: {w['user']} / {w['password_masked']} -> {w['why']}")
+        kit.store.add_finding(
+            kit.phase, f"Default/weak credentials accepted on {urllib.parse.urlsplit(args.url).hostname}",
+            kind="bac", severity="high", url=args.url,
+            summary="A login gate accepts a default or weak credential.",
+            steps=f"POST {args.url} with {w['user']} / (masked). Success: {w['why']}.",
+            impact="Authenticated access to a protected/internal application.",
+            status="candidate")
+    return 0
+
+
 def cmd_secrets(kit: Kit, args) -> int:
     from . import secretscan
     root = Path(args.path).expanduser()
@@ -887,6 +1007,16 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(func=cmd_secrets)
     a = sub.add_parser("vhost"); a.add_argument("ip_url"); a.add_argument("--json", action="store_true")
     a.set_defaults(func=cmd_vhost)
+    a = sub.add_parser("login-probe")
+    a.add_argument("url")
+    a.add_argument("--enum", action="store_true", help="differential username enumeration (no password guessing)")
+    a.add_argument("--user-field", help="username form field (default: username)")
+    a.add_argument("--pass-field", help="password form field (default: password)")
+    a.add_argument("--extra", help="extra static form fields, k=v,k=v (e.g. a CSRF token)")
+    a.add_argument("--json-body", action="store_true", help="send JSON instead of form-encoded")
+    a.add_argument("--json", action="store_true"); a.set_defaults(func=cmd_login_probe)
+    a = sub.add_parser("creds"); a.add_argument("action", choices=["add", "list"]); a.add_argument("value", nargs="?")
+    a.set_defaults(func=cmd_creds)
     a = sub.add_parser("cache"); a.add_argument("url"); a.add_argument("--json", action="store_true")
     a.set_defaults(func=cmd_cache)
     a = sub.add_parser("wordlist")

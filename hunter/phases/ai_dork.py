@@ -71,6 +71,9 @@ class GithubDorkPhase(AgentPhase):
                      "third-party/customer credential."),
             MustStep("M6", "Record masked (last 4 only): reportable -> `hk finding add` with provenance; "
                      "third-party -> `hk add lead`. Group by provenance in ./handoff.md."),
+            MustStep("M7", "If you find a username:password pair for a company system (an admin login, a "
+                     "default cred in a config/README, a basic-auth string), record it with "
+                     "`hk creds add 'user:pass'` so the authz phase tries it on in-scope login gates."),
         ]
 
     def task(self, ctx: Context) -> str:

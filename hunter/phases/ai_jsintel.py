@@ -41,7 +41,9 @@ class JsIntelPhase(AgentPhase):
             MustStep("M5", "Record role/permission strings (ROLE_ADMIN, isAdmin, scopes) for the "
                      "authenticated-testing phase.", "roles.txt"),
             MustStep("M6", "Run `hk secrets <jsdir>` over the bundles; record real ones by KIND only "
-                     "(`hk add lead secret-in-js`).", "secrets.txt"),
+                     "(`hk add lead secret-in-js`). If you find an actual username:password pair (a hardcoded "
+                     "login, a default admin, a basic-auth string), record it with `hk creds add 'user:pass'` "
+                     "so the authz phase tries it on login gates.", "secrets.txt"),
             MustStep("M7", "Record dangerous DOM sinks and their sources (innerHTML, document.write, "
                      "location/hash, postMessage, window.name, eval) as DOM-XSS leads.", "sinks.txt"),
         ]

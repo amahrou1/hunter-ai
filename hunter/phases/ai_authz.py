@@ -35,6 +35,11 @@ class AIAuthzPhase(AgentPhase):
                      "queries, mutations, persisted/hashed queries."),
             MustStep("M5", "Business logic: price/quantity/step manipulation, state skipping, one-time-action "
                      "reuse. Record each with `hk finding add` incl. the control request; status candidate."),
+            MustStep("M6", "Every login gate / admin or internal dashboard (from discover, jsintel, vhost "
+                     "leads): run `hk login-probe <login-url>` (tries collected + default creds, capped - not "
+                     "brute force) and `hk login-probe <login-url> --enum` for valid usernames. If a gate "
+                     "enforces access CLIENT-SIDE (a deny page/redirect that the JS turns into 'allowed'), "
+                     "forge the success response/flag and record a finding if you get in."),
         ]
 
     def task(self, ctx: Context) -> str:
@@ -53,6 +58,23 @@ class AIAuthzPhase(AgentPhase):
             "from headers and JS), changing variables while keeping the hash.\n"
             "5. Business logic: price/quantity/step manipulation, state skipping, repeated use of one-time "
             "actions - whatever the app's workflows allow.\n"
+            "6. LOGIN GATES & INTERNAL DASHBOARDS (high-value - this is where auth-bypass criticals live). For "
+            "every admin/internal/login gate in the inventory (discover findings, jsintel hidden-endpoint and "
+            "auth-mechanism leads, vhost leads):\n"
+            "   a. `hk login-probe <login-url>` - it tries the credentials the run collected (org GitHub/JS "
+            "leaks) first, then a small set of vendor defaults. It is CAPPED in code (~25 attempts) and is NOT "
+            "a brute force; use it, do not try to brute force by hand (that is blocked). A success is recorded "
+            "as a finding automatically.\n"
+            "   b. `hk login-probe <login-url> --enum` - differential username enumeration. If it finds valid "
+            "usernames, that is a lead and a reason to try the collected creds for those users.\n"
+            "   c. CLIENT-SIDE-ENFORCED ACCESS: if the gate denies with a page/redirect/status that the "
+            "JavaScript decides on (e.g. a 403 or a non-200 'access denied', and the JS only shows the app on a "
+            "specific status/body/flag), FORGE the success condition: re-request and rewrite the response to "
+            "the allowed status/body the JS expects, or send the header/param/cookie the client checks. If the "
+            "server does not actually enforce the gate, you reach the app - record a critical auth-bypass "
+            "finding with the exact forge.\n"
+            "   d. Read the auth-mechanism leads from jsintel: a header checked only for PRESENCE (not a valid "
+            "credential) is a classic bypass - send a made-up value and see if you are let in.\n"
             "Rules: use ONLY accounts you created or were given. Show a problem with the SMALLEST possible "
             "proof (one object, one request). Never read or change real users' data beyond the minimum to "
             "prove access, never run destructive actions, never mass-enumerate. Capture the exact "
