@@ -29,7 +29,8 @@ class AIInjectionPhase(AgentPhase):
                      "./handoff.md: tested (with result) or skipped (with reason). Do not leave them unread.",
                      "leads-addressed.md"),
             MustStep("M1", "Gather the test surface: interesting params (`hk endpoints`), the 'parameters' "
-                     "and injection-candidate leads (`hk leads`), and forms."),
+                     "and injection-candidate leads (`hk leads`), forms, and `hk techhints` (stack-specific "
+                     "injection checks for the technologies present)."),
             MustStep("M2", "Test each for reflected/stored/DOM XSS, SQL/NoSQL, SSRF, SSTI, open redirect, "
                      "CRLF/header/host-header injection - detect with a harmless marker, then stop."),
             MustStep("M3", "Where the app has AI/LLM features, test prompt injection, system-prompt/tool-"

@@ -23,8 +23,10 @@ class AIDiscoverPhase(AgentPhase):
 
     def must_steps(self, ctx: Context) -> list[MustStep]:
         return [
-            MustStep("M1", "Read the fuzzing playbook first: `cat $(hk playbook)` (wordlists, extensions, "
-                     "403-bypass tricks)."),
+            MustStep("M1", "Read the fuzzing playbook (`cat $(hk playbook)`) AND `hk techhints` - the latter "
+                     "lists the high-yield checks for the exact technologies fingerprinted on this target "
+                     "(IIS shortname, Spring actuator, Swagger, WordPress, ...). Use them on the matching "
+                     "hosts."),
             MustStep("M2", "Pick the HIGH-VALUE hosts (admin/api/internal/auth/portal/vpn/dashboard names, "
                      "login gates, odd or old tech) and list them in ./deep-targets.md - these get deep, "
                      "targeted fuzzing, not one shallow pass.", "deep-targets.md"),

@@ -38,11 +38,27 @@ HINTS: list[tuple[str, str]] = [
     ("openapi", "OpenAPI doc exposed: feed every path+param into the testing phases; try undocumented "
                 "verbs and the 401-bypass tricks on each."),
     ("citrix", "Citrix: check for known gateway CVEs by version (e.g. path traversal/RCE); /vpn/ paths."),
-    ("graphql", "GraphQL detected: the 09b-graphql phase covers it - ensure introspection and GET-CSRF "
-                "were tested."),
     ("actuator", "Spring Boot actuator: /actuator/env, /heapdump, /mappings - often leak secrets/config."),
     ("spring", "Spring: check /actuator/*, error-page stack traces, and known Spring4Shell-class CVEs by "
                "version."),
+    ("nginx", "nginx: off-by-slash alias traversal (/assets../), merge_slashes, and misrouted internal "
+              "locations (X-Accel-Redirect)."),
+    ("apache", "Apache: path normalisation/traversal (CVE-2021-41773 class on old 2.4), mod_proxy SSRF, "
+               ".htaccess/.htpasswd exposure."),
+    ("tomcat", "Tomcat: /manager and /host-manager default creds, examples app, and the AJP ghostcat "
+               "class on old versions."),
+    ("jenkins", "Jenkins: /script console if reachable, /asynchPeople, user enumeration, old-version RCE "
+                "CVEs by build."),
+    ("gitlab", "GitLab: version-specific CVEs, open registration, exposed /explore and project "
+               "enumeration."),
+    ("kibana", "Kibana/Elastic: unauthenticated access to indices, old-version prototype-pollution RCE, "
+               "/api/console."),
+    ("jwt", "JWT in use: try alg=none, key confusion (RS256->HS256 with the public key), and a weak/"
+            "guessable HMAC secret on the token."),
+    ("graphql", "GraphQL detected: the 09b-graphql phase covers it - ensure introspection, batching/alias "
+                "abuse, field suggestions and GET-CSRF were tested."),
+    ("next.js", "Next.js: /_next/ data routes, the image-optimisation SSRF (_next/image?url=), and "
+                "exposed getServerSideProps data."),
 ]
 
 

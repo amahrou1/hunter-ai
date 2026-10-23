@@ -21,7 +21,7 @@ def test_salesforce_and_swagger():
 
 
 def test_no_match_is_empty():
-    assert techhints.hints_for(["nginx", "generic app"]) == []
+    assert techhints.hints_for(["generic app", "custom server 1.0"]) == []
 
 
 def test_dedup_same_keyword():
